@@ -14,8 +14,11 @@ specmon [global-flags] <command> [command-flags] <arguments>
 ### Command hierarchy
 
 - **`specmon [flags] <spec-path>`** - Parse and display specification
+- **`specmon compile [flags] <spec-path>`** - Compile a `.spthy` specification into a portable JSON ruleset
 - **`specmon monitor [flags] <spec-path>`** - Monitor event streams in real-time
 - **`specmon rewrite [flags] <spec-path>`** - Rewrite function-call traces into SpecMon events
+
+The `<spec-path>` argument accepts either a `.spthy` source file or a compiled `.ruleset.json` file. The format is detected automatically from the file extension unless overridden with `--rules-format`.
 
 ## Global flags
 
@@ -41,6 +44,15 @@ These flags are available for all commands:
 - **Values**: "panic", "fatal", "error", "warn", "info", "debug", "trace"
 - **Description**: Set logging level for internal operations
 - **Example**: `specmon --log-level info monitor protocol.spthy`
+
+### Rule loading
+
+**`--rules-format <format>`**
+- **Type**: string
+- **Default**: "auto"
+- **Values**: `auto`, `spthy`, `json`
+- **Description**: Controls how the rule file is loaded. `auto` infers the format from the file extension (`.json` → compiled ruleset, anything else → `.spthy` parser). Use `spthy` or `json` to override.
+- **Example**: `specmon --rules-format json monitor protocol.ruleset.json`
 
 ### Specification processing
 
@@ -88,10 +100,10 @@ These flags are available for all commands:
 
 **Usage**: `specmon [flags] <spec-path>`
 
-**Description**: Parse and validate a Tamarin specification file, optionally applying role selection and rule decomposition. Displays the processed rules and statistics.
+**Description**: Parse and validate a specification, optionally applying role selection and rule decomposition. Displays the processed rules and statistics.
 
 **Arguments**:
-- `<spec-path>` - Path to the Tamarin specification file (.spthy)
+- `<spec-path>` - Path to a `.spthy` specification or a compiled `.ruleset.json` file
 
 **Example**:
 ```bash
@@ -122,6 +134,43 @@ Decomp result: 23 rules
   ...
 ```
 
+### Compile command: `specmon compile`
+
+**Usage**: `specmon compile [flags] <spec-path>`
+
+**Description**: Compile a `.spthy` specification into a self-contained, versioned JSON ruleset. The compiled file can be used with `monitor` and `rewrite` in place of the original source, including in builds without the tree-sitter parser.
+
+**Arguments**:
+- `<spec-path>` - Path to the `.spthy` specification to compile
+
+**Flags**:
+
+**`--out, -o <path>`**
+- **Type**: string
+- **Default**: stdout (`-`)
+- **Description**: Write the compiled ruleset to a file instead of stdout. The recommended extension is `.ruleset.json`.
+- **Example**: `specmon compile --out protocol.ruleset.json protocol.spthy`
+
+The `--role`, `--defines`, and `--decompose` global flags are respected; their values are recorded in the ruleset's `source` metadata and validated when the file is loaded later.
+
+**Examples**:
+
+```bash
+# Compile to stdout (inspect the output)
+specmon compile protocol.spthy
+
+# Compile to a file
+specmon compile --out protocol.ruleset.json protocol.spthy
+
+# Compile for a specific role with preprocessor defines
+specmon --role client --defines SPECMON compile --out client.ruleset.json protocol.spthy
+
+# Compile with decomposition disabled
+specmon --decompose=false compile --out raw.ruleset.json protocol.spthy
+```
+
+See [Compiling Rulesets](/guides/compile/) for a complete workflow guide.
+
 ### Monitor command: `specmon monitor`
 
 **Usage**: `specmon monitor [flags] <spec-path>`
@@ -129,7 +178,7 @@ Decomp result: 23 rules
 **Description**: Monitor event streams in real-time or from files, applying the specification rules to detect protocol violations and security property breaches.
 
 **Arguments**:
-- `<spec-path>` - Path to the Tamarin specification file (.spthy)
+- `<spec-path>` - Path to a `.spthy` specification or a compiled `.ruleset.json` file
 
 **Flags**:
 
@@ -164,8 +213,11 @@ Decomp result: 23 rules
 **Examples**:
 
 ```bash
-# Monitor from file
-specmon monitor --in trace.json --verbose protocol.spthy
+# Monitor from a .spthy source (default)
+specmon monitor --in trace.json protocol.spthy
+
+# Monitor from a compiled ruleset
+specmon monitor --in trace.json protocol.ruleset.json
 
 # Monitor from stdin with pre-trace
 specmon monitor --pre-trace setup.json protocol.spthy < live-events.json
@@ -197,7 +249,7 @@ Use the same `--role` and `--defines` for both the rewrite and monitoring rules.
 **Description**: Rewrite low-level function-call traces into abstract SpecMon events using `PPEvent(...)` rules. Useful for normalizing library call chains and renaming functions.
 
 **Arguments**:
-- `<spec-path>` - Path to the Tamarin specification file containing rewrite rules
+- `<spec-path>` - Path to a `.spthy` specification or a compiled `.ruleset.json` file containing rewrite rules
 
 **Flags**:
 

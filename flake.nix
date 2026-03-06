@@ -14,11 +14,12 @@
       pkgs.mkShell {
         buildInputs = [
           pkgs.go
-	  pkgs.gotools
-	  pkgs.gopls
-	  pkgs.golangci-lint
-	  pkgs.nodejs
-	  pkgs.pnpm
+          pkgs.tinygo
+          pkgs.gotools
+          pkgs.gopls
+          pkgs.golangci-lint
+          pkgs.nodejs
+          pkgs.pnpm
         ];
       };
     });

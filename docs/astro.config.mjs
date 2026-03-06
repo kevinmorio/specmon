@@ -62,11 +62,18 @@ export default defineConfig({
 					],
 				},
 				{
+					label: 'Guides',
+					items: [
+						{ label: 'Compiling Rulesets', slug: 'guides/compile' },
+					],
+				},
+				{
 					label: 'Reference',
 					items: [
-					{ label: 'Event Format', slug: 'reference/event-format' },
-					{ label: 'Built-in Functions', slug: 'reference/built-in-functions' },
-					{ label: 'CLI Commands', slug: 'reference/cli' },
+						{ label: 'Event Format', slug: 'reference/event-format' },
+						{ label: 'Built-in Functions', slug: 'reference/built-in-functions' },
+						{ label: 'CLI Commands', slug: 'reference/cli' },
+						{ label: 'Ruleset Format', slug: 'reference/ruleset-format' },
 					],
 				},
 				{

@@ -58,8 +58,9 @@ func (r *RewriteConfig) RunE(cmd *cobra.Command, args []string) error {
 	role, _ := cmd.Root().Flags().GetString("role")
 	decompose, _ := cmd.Root().Flags().GetBool("decompose")
 	defines, _ := cmd.Root().Flags().GetStringSlice("defines")
+	rulesFormat, _ := cmd.Root().Flags().GetString("rules-format")
 
-	_, _, decompRules, err := ProcessRules(specPath, role, decompose, defines)
+	_, _, decompRules, err := LoadRules(specPath, rulesFormat, role, decompose, defines)
 	if err != nil {
 		return fmt.Errorf("cannot process rules: %w", err)
 	}

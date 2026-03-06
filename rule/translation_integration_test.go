@@ -1,3 +1,5 @@
+//go:build !no_treesitter
+
 package rule_test
 
 import (

@@ -36,18 +36,21 @@ import (
 )
 
 const (
-	ConstantType      = "constant"
-	VariableType      = "variable"
-	FunctionType      = "function"
-	PairFunctionName  = "pair"
-	SliceFunctionName = "slice"
-	ReverseFuncName   = "reverse"
-	ExpFunctionName   = "exp"
-	AndFunctionName   = "and"
-	OrFunctionName    = "or"
-	AddFunctionName   = "add"
-	BinaryArity       = 2
-	TernaryArity      = 3
+	ConstantType       = "constant"
+	VariableType       = "variable"
+	FunctionType       = "function"
+	ConstantIntKind    = "int"
+	ConstantStringKind = "string"
+	ConstantBytesKind  = "bytes"
+	PairFunctionName   = "pair"
+	SliceFunctionName  = "slice"
+	ReverseFuncName    = "reverse"
+	ExpFunctionName    = "exp"
+	AndFunctionName    = "and"
+	OrFunctionName     = "or"
+	AddFunctionName    = "add"
+	BinaryArity        = 2
+	TernaryArity       = 3
 
 	PublicPrefix = "$"
 )
@@ -91,7 +94,6 @@ type Term interface {
 	fmt.Stringer
 	Equal(t Term) bool
 	GetType() string
-	fromWeakTerm(w WeakTerm) error
 	JSON() string
 
 	Unify(other Term) (*Binding, error)
@@ -325,109 +327,6 @@ func (f *Function) JSON() string {
 	return toJSONString(f)
 }
 
-func (c *Constant[T]) fromWeakTerm(w WeakTerm) error {
-	if w.Type != ConstantType {
-		return fmt.Errorf("expected type '%s', got '%s'", ConstantType, w.Type)
-	}
-
-	t, ok := w.Value.(T)
-	if !ok {
-		return fmt.Errorf("cannot convert '%v' into constant", w.Value)
-	}
-
-	c.Value = t
-	c.Type = w.Type
-
-	return nil
-}
-
-func (v *Variable) fromWeakTerm(w WeakTerm) error {
-	if w.Type != VariableType {
-		return fmt.Errorf("expected type '%s', got '%s'", VariableType, w.Type)
-	}
-	v.Name = w.Name
-	v.Type = w.Type
-
-	return nil
-}
-
-func (f *Function) fromWeakTerm(w WeakTerm) error {
-	if w.Type != FunctionType {
-		return fmt.Errorf("expected type '%s', got '%s'", FunctionType, w.Type)
-	}
-	f.Name = w.Name
-	f.Type = w.Type
-
-	for _, arg := range w.Args {
-		switch arg.Type {
-		case ConstantType:
-			switch r := arg.Value.(type) {
-			// These types can be safely cast to int.
-			case int8, int16, int32, int:
-				c := NewConstant[int](r.(int))
-				f.Args = append(f.Args, c)
-				// This can only be safely cast if int coincides to int64.
-			case int64:
-				if int64(int(r)) != r {
-					return fmt.Errorf("integer overflow on %d", r)
-				}
-				c := NewConstant[int](int(r))
-				f.Args = append(f.Args, c)
-				// These can only be safely cast if they are basically integers.
-			case float32:
-				if float32(int(r)) != r {
-					return fmt.Errorf("floats are not supported, got %f", r)
-				}
-				c := NewConstant[int](int(r))
-				f.Args = append(f.Args, c)
-			case float64:
-				if float64(int(r)) != r {
-					return fmt.Errorf("floats are not supported, got %f", r)
-				}
-				c := NewConstant[int](int(r))
-				f.Args = append(f.Args, c)
-			case string:
-				if strings.HasPrefix(r, "0x") {
-					bytes, err := hex.DecodeString(r[2:])
-					if err == nil {
-						c := NewConstant[[]byte](bytes)
-						f.Args = append(f.Args, c)
-
-						continue
-					}
-				}
-
-				c := NewConstant[string](r)
-				f.Args = append(f.Args, c)
-			case []byte:
-				c := NewConstant[[]byte](r)
-				f.Args = append(f.Args, c)
-			case nil:
-				c := NewConstant[[]byte](nil)
-				f.Args = append(f.Args, c)
-			default:
-				return fmt.Errorf("unsupported type of %v", r)
-			}
-		case VariableType:
-			var v Variable
-			if err := v.fromWeakTerm(arg); err != nil {
-				return err
-			}
-			f.Args = append(f.Args, &v)
-		case FunctionType:
-			var tp Function
-			if err := tp.fromWeakTerm(arg); err != nil {
-				return err
-			}
-			f.Args = append(f.Args, &tp)
-		default:
-			return fmt.Errorf("unknown type '%s'", arg.Type)
-		}
-	}
-
-	return nil
-}
-
 func AsConstant[T ConstantConstraint](t Term) (*Constant[T], error) {
 	c, ok := t.(*Constant[T])
 
@@ -510,14 +409,191 @@ func (f *Function) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("failed to unmarshal JSON: %w", err)
 	}
 
-	return f.fromWeakTerm(w)
+	t, err := FromWeakTerm(w)
+	if err != nil {
+		return err
+	}
+	fn, err := AsFunction(t)
+	if err != nil {
+		return err
+	}
+	*f = *fn
+	return nil
 }
 
 type WeakTerm struct {
-	Name  string     `json:"name,omitempty"`
-	Type  string     `json:"type,omitempty"`
-	Value any        `json:"value,omitempty"`
-	Args  []WeakTerm `json:"args,omitempty"`
+	Name      string     `json:"name,omitempty"`
+	Type      string     `json:"type,omitempty"`
+	Value     any        `json:"value,omitempty"`
+	ConstKind string     `json:"const_kind,omitempty"`
+	Args      []WeakTerm `json:"args,omitempty"`
+}
+
+// ToWeakTerm converts a Term into a serializable weak representation.
+func ToWeakTerm(t Term) (WeakTerm, error) {
+	switch tt := t.(type) {
+	case *Constant[int]:
+		return WeakTerm{Type: ConstantType, Value: tt.Value, ConstKind: ConstantIntKind}, nil
+	case *Constant[string]:
+		return WeakTerm{Type: ConstantType, Value: tt.Value, ConstKind: ConstantStringKind}, nil
+	case *Constant[[]byte]:
+		if tt.Value == nil {
+			return WeakTerm{Type: ConstantType, Value: nil, ConstKind: ConstantBytesKind}, nil
+		}
+		return WeakTerm{
+			Type:      ConstantType,
+			Value:     fmt.Sprintf("0x%x", tt.Value),
+			ConstKind: ConstantBytesKind,
+		}, nil
+	case *Variable:
+		return WeakTerm{Name: tt.Name, Type: tt.Type}, nil
+	case *Function:
+		args := make([]WeakTerm, len(tt.Args))
+		for i, arg := range tt.Args {
+			w, err := ToWeakTerm(arg)
+			if err != nil {
+				return WeakTerm{}, err
+			}
+			args[i] = w
+		}
+		return WeakTerm{Name: tt.Name, Type: tt.Type, Args: args}, nil
+	default:
+		return WeakTerm{}, fmt.Errorf("unsupported term type %T", t)
+	}
+}
+
+// FromWeakTerm converts a weak representation back into a concrete Term.
+// It is the exported entry point used by the rule serialization layer.
+func FromWeakTerm(w WeakTerm) (Term, error) {
+	switch w.Type {
+	case ConstantType:
+		return fromWeakConstant(w)
+	case VariableType:
+		return &Variable{Name: w.Name, Type: w.Type}, nil
+	case FunctionType:
+		fn := &Function{Name: w.Name, Type: w.Type}
+		for _, arg := range w.Args {
+			t, err := FromWeakTerm(arg)
+			if err != nil {
+				return nil, err
+			}
+			fn.Args = append(fn.Args, t)
+		}
+		return fn, nil
+	default:
+		return nil, fmt.Errorf("unknown type '%s'", w.Type)
+	}
+}
+
+func fromWeakConstant(w WeakTerm) (Term, error) {
+	// Prefer explicit const kind when present.
+	switch w.ConstKind {
+	case ConstantIntKind:
+		v, err := weakInt(w.Value)
+		if err != nil {
+			return nil, err
+		}
+		return NewConstant[int](v), nil
+	case ConstantStringKind:
+		s, ok := w.Value.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected string constant value, got %T", w.Value)
+		}
+		return NewConstant[string](s), nil
+	case ConstantBytesKind:
+		if w.Value == nil {
+			return NewConstant[[]byte](nil), nil
+		}
+		s, ok := w.Value.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected hex string bytes value, got %T", w.Value)
+		}
+		if !strings.HasPrefix(s, "0x") {
+			return nil, fmt.Errorf("expected bytes value prefixed with 0x, got %q", s)
+		}
+		b, err := hex.DecodeString(s[2:])
+		if err != nil {
+			return nil, fmt.Errorf("invalid hex bytes constant %q: %w", s, err)
+		}
+		return NewConstant[[]byte](b), nil
+	case "":
+		// Backward-compatible decoding for older payloads with no const kind.
+	default:
+		return nil, fmt.Errorf("unknown const kind '%s'", w.ConstKind)
+	}
+
+	switch r := w.Value.(type) {
+	// These types can be safely cast to int.
+	case int8, int16, int32, int:
+		return NewConstant[int](r.(int)), nil
+	// This can only be safely cast if int coincides to int64.
+	case int64:
+		if int64(int(r)) != r {
+			return nil, fmt.Errorf("integer overflow on %d", r)
+		}
+		return NewConstant[int](int(r)), nil
+	// These can only be safely cast if they are basically integers.
+	case float32:
+		if float32(int(r)) != r {
+			return nil, fmt.Errorf("floats are not supported, got %f", r)
+		}
+		return NewConstant[int](int(r)), nil
+	case float64:
+		if float64(int(r)) != r {
+			return nil, fmt.Errorf("floats are not supported, got %f", r)
+		}
+		return NewConstant[int](int(r)), nil
+	case string:
+		if strings.HasPrefix(r, "0x") {
+			bytes, err := hex.DecodeString(r[2:])
+			if err == nil {
+				return NewConstant[[]byte](bytes), nil
+			}
+		}
+		return NewConstant[string](r), nil
+	case []byte:
+		return NewConstant[[]byte](r), nil
+	case nil:
+		return NewConstant[[]byte](nil), nil
+	default:
+		return nil, fmt.Errorf("unsupported type of %v", r)
+	}
+}
+
+func weakInt(v any) (int, error) {
+	switch r := v.(type) {
+	case int:
+		return r, nil
+	case int8:
+		return int(r), nil
+	case int16:
+		return int(r), nil
+	case int32:
+		return int(r), nil
+	case int64:
+		if int64(int(r)) != r {
+			return 0, fmt.Errorf("integer overflow on %d", r)
+		}
+		return int(r), nil
+	case float32:
+		if float32(int(r)) != r {
+			return 0, fmt.Errorf("floats are not supported, got %f", r)
+		}
+		return int(r), nil
+	case float64:
+		if float64(int(r)) != r {
+			return 0, fmt.Errorf("floats are not supported, got %f", r)
+		}
+		return int(r), nil
+	case string:
+		i, err := strconv.Atoi(r)
+		if err != nil {
+			return 0, fmt.Errorf("invalid integer %q: %w", r, err)
+		}
+		return i, nil
+	default:
+		return 0, fmt.Errorf("unsupported integer value type %T", v)
+	}
 }
 
 func Vars(t Term) []*Variable {

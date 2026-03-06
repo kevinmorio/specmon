@@ -1,3 +1,5 @@
+//go:build !no_treesitter
+
 package parser
 
 import (

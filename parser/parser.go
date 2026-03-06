@@ -1,3 +1,5 @@
+//go:build !no_treesitter
+
 // Copyright (C) 2025 CISPA Helmholtz Center for Information Security
 // Author: Kevin Morio <kevin.morio@cispa.de>
 //

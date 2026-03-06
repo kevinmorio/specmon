@@ -25,7 +25,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 
@@ -37,7 +39,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// ProcessRules parses the rules from the given path and returns the original, the selected and the decomposed rules.
+// ProcessRules parses a .spthy specification and returns original, selected and decomposed rules.
 func ProcessRules(specPath, role string, decompose bool, defines []string) ([]*rule.Rule, []*rule.Rule, []*rule.Rule, error) {
 	rules, err := parser.ParseFile(context.Background(), specPath, defines)
 	if err != nil {
@@ -60,6 +62,90 @@ func ProcessRules(specPath, role string, decompose bool, defines []string) ([]*r
 	}
 
 	return rules, selectedRules, decompRules, nil
+}
+
+// LoadRules loads rules from the given path using a specified format strategy.
+// Supported formats are "auto", "spthy", and "json".
+func LoadRules(specPath, format, role string, decompose bool, defines []string) ([]*rule.Rule, []*rule.Rule, []*rule.Rule, error) {
+	selectedFormat := strings.ToLower(strings.TrimSpace(format))
+	if selectedFormat == "" {
+		selectedFormat = "auto"
+	}
+
+	switch selectedFormat {
+	case "auto":
+		if strings.EqualFold(filepath.Ext(specPath), ".json") {
+			selectedFormat = "json"
+		} else {
+			selectedFormat = "spthy"
+		}
+	case "spthy", "json":
+		// Already explicit.
+	default:
+		return nil, nil, nil, fmt.Errorf("unsupported rules format %q (expected auto|spthy|json)", format)
+	}
+
+	if selectedFormat == "spthy" {
+		return ProcessRules(specPath, role, decompose, defines)
+	}
+
+	data, err := os.ReadFile(specPath)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("cannot read ruleset: %w", err)
+	}
+
+	rules, meta, err := rule.UnmarshalRuleset(data)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("cannot load compiled ruleset: %w", err)
+	}
+	if err := validateRulesetOptions(meta, role, decompose, defines); err != nil {
+		return nil, nil, nil, fmt.Errorf("compiled ruleset options mismatch: %w", err)
+	}
+
+	return rules, rules, rules, nil
+}
+
+func validateRulesetOptions(meta rule.RulesetMeta, role string, decompose bool, defines []string) error {
+	if meta.Source == nil {
+		return nil
+	}
+
+	if role != meta.Source.Role {
+		return fmt.Errorf(
+			"role=%q but ruleset was compiled with role=%q; recompile or adjust --role",
+			role,
+			meta.Source.Role,
+		)
+	}
+	if decompose != meta.Source.Decompose {
+		return fmt.Errorf(
+			"decompose=%t but ruleset was compiled with decompose=%t; recompile or adjust --decompose",
+			decompose,
+			meta.Source.Decompose,
+		)
+	}
+	if !equalStringSets(defines, meta.Source.Defines) {
+		return fmt.Errorf(
+			"defines=%v but ruleset was compiled with defines=%v; recompile with matching --defines",
+			defines,
+			meta.Source.Defines,
+		)
+	}
+
+	return nil
+}
+
+func equalStringSets(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	ac := append([]string(nil), a...)
+	bc := append([]string(nil), b...)
+	slices.Sort(ac)
+	slices.Sort(bc)
+
+	return slices.Equal(ac, bc)
 }
 
 // addFlagsFromStruct adds flags to the given command from the given struct.

@@ -19,11 +19,7 @@
 package rule
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
-	"log"
-	"os"
 	"sort"
 	"strings"
 
@@ -230,27 +226,6 @@ func SortRule(r *Rule) {
 	sort.Sort(Facts(r.LHS))
 	sort.Sort(Facts(r.Act))
 	sort.Sort(Facts(r.RHS))
-}
-
-func ReadRules(filename string) []Rule {
-	f, err := os.Open(filename)
-	if err != nil {
-		log.Panic(err.Error())
-	}
-	defer f.Close()
-
-	log.Printf("Loading rules from %s\n", filename)
-	bytes, err := io.ReadAll(f)
-	if err != nil {
-		log.Panic(err.Error())
-	}
-
-	var rules []Rule
-	if err := json.Unmarshal(bytes, &rules); err != nil {
-		log.Panic(err)
-	}
-
-	return rules
 }
 
 // ExpandFormats expands all format terms in a rule.

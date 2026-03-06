@@ -44,6 +44,7 @@ type RootConfig struct {
 	Verbose        bool     `flag:"verbose"          short:"v" desc:"verbose output"`
 	Quiet          bool     `flag:"quiet"            short:"q" desc:"quiet output"`
 	Decompose      bool     `flag:"decompose"        short:"d" desc:"decompose rules"`
+	RulesFormat    string   `flag:"rules-format"     short:""  desc:"rule loading format: auto|spthy|json"`
 	LogLevel       string   `flag:"log-level"        short:"l" desc:"log level"`
 	Role           string   `flag:"role"             short:"r" desc:"role"`
 	Defines        []string `flag:"defines"          short:"D" desc:"define preprocessor variables"`
@@ -55,8 +56,9 @@ type RootConfig struct {
 // DefaultRootConfig returns the default configuration of the root command.
 func DefaultRootConfig() *RootConfig {
 	return &RootConfig{
-		LogLevel:  "error",
-		Decompose: true,
+		LogLevel:    "error",
+		Decompose:   true,
+		RulesFormat: "auto",
 	}
 }
 
@@ -64,7 +66,7 @@ func DefaultRootConfig() *RootConfig {
 // The command parses a specification, and if requested,
 // performs a filtering and decomposition of the rules.
 func (c *RootConfig) RunE() error {
-	rules, selectedRules, decompRules, err := ProcessRules(c.SpecPath, c.Role, c.Decompose, c.Defines)
+	rules, selectedRules, decompRules, err := LoadRules(c.SpecPath, c.RulesFormat, c.Role, c.Decompose, c.Defines)
 	if err != nil {
 		return err
 	}
@@ -211,6 +213,7 @@ func NewRootCmd() *cobra.Command {
 func Root() *cobra.Command {
 	rootCmd := NewRootCmd()
 	rootCmd.AddCommand(
+		NewCompileCmd(),
 		NewMonitorCmd(),
 		NewRewriteCmd(),
 	)

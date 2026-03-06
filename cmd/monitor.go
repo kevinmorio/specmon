@@ -68,9 +68,10 @@ func (r *MonitorConfig) RunE(cmd *cobra.Command, args []string) error {
 	role, _ := cmd.Root().Flags().GetString("role")
 	decompose, _ := cmd.Root().Flags().GetBool("decompose")
 	defines, _ := cmd.Root().Flags().GetStringSlice("defines")
+	rulesFormat, _ := cmd.Root().Flags().GetString("rules-format")
 
 	// Parse main monitoring rules
-	_, _, decompRules, err := ProcessRules(specPath, role, decompose, defines)
+	_, _, decompRules, err := LoadRules(specPath, rulesFormat, role, decompose, defines)
 	if err != nil {
 		return err
 	}
@@ -91,7 +92,7 @@ func (r *MonitorConfig) RunE(cmd *cobra.Command, args []string) error {
 	if r.RewriteWith != "" {
 		// Integrated rewrite mode: first process pre-trace directly to main monitor,
 		// then feed live input through the rewriter and into the main monitor.
-		rewriteRules, _, _, err := ProcessRules(r.RewriteWith, role, decompose, defines)
+		rewriteRules, _, _, err := LoadRules(r.RewriteWith, rulesFormat, role, decompose, defines)
 		if err != nil {
 			return fmt.Errorf("cannot process rewrite rules: %w", err)
 		}

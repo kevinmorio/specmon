@@ -95,18 +95,22 @@ To verify that SpecMon is correctly installed:
      specmon [command]
 
    Available Commands:
+     compile     compile a .spthy specification into a JSON ruleset
      completion  Generate the autocompletion script for the specified shell
      help        Help about any command
      monitor     monitor the event trace
+     rewrite     rewrite the input trace based on the rules
 
    Flags:
      -c, --cpu-profile-path string   cpu profile path
      -d, --decompose                 decompose rules (default true)
+     -D, --defines strings           define preprocessor variables
      -h, --help                      help for specmon
      -l, --log-level string          log level (default "error")
      -m, --mem-profile-path string   memory profile path
      -q, --quiet                     quiet output
      -r, --role string               role
+         --rules-format string       rule loading format: auto|spthy|json (default "auto")
      -s, --spec-path string          specification path
      -v, --verbose                   verbose output
          --version                   version for specmon
