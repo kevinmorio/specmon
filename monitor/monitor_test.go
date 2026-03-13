@@ -19,6 +19,7 @@
 package monitor_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/specmon/specmon/monitor"
@@ -233,4 +234,122 @@ func TestMonitorRestrictionViolation(t *testing.T) {
 	}
 
 	t.Logf("Test passed: Rule A succeeded, Rule B failed due to restriction violation")
+}
+
+func TestMonitorConsumesFormattedTriggerEvent(t *testing.T) {
+	prefix := []byte{0x01, 0x02}
+
+	testRule := &rule.Rule{
+		Name: "FormattedTrigger",
+		LHS: []*rule.Fact{
+			rule.NewFact("State", nil, rule.LinearFact),
+		},
+		RHS: []*rule.Fact{
+			rule.NewFact("Done", []term.Term{term.NewVariable("digest")}, rule.LinearFact),
+		},
+		Attrs: map[string]rule.Attribute{
+			"trigger": rule.TermAttribute{
+				Value: []term.Term{
+					term.NewFunction("pair", []term.Term{
+						term.NewFunction("h", []term.Term{
+							term.NewFunction("cat", []term.Term{
+								term.NewFunction("byte", []term.Term{
+									term.NewConstant(prefix),
+								}),
+								term.NewFunction("byte", []term.Term{
+									term.NewConstant([]byte("foo")),
+								}),
+							}),
+						}),
+						term.NewVariable("digest"),
+					}),
+				},
+			},
+		},
+	}
+
+	mon, err := monitor.NewMonitor([]*rule.Rule{testRule})
+	if err != nil {
+		t.Fatalf("Failed to create monitor: %v", err)
+	}
+
+	configs := mon.Configs()
+	if len(configs) != 1 {
+		t.Fatalf("Expected 1 initial config, got %d", len(configs))
+	}
+	configs[0].AddFact(rule.NewFact("State", nil, rule.LinearFact))
+
+	event := term.NewFunction("pair", []term.Term{
+		term.NewFunction("h", []term.Term{
+			term.NewFunction("cat", []term.Term{
+				term.NewFunction("byte", []term.Term{
+					term.NewConstant(prefix),
+				}),
+				term.NewFunction("byte", []term.Term{
+					term.NewConstant([]byte("foo")),
+				}),
+			}),
+		}),
+		term.NewConstant([]byte{0xaa, 0xbb}),
+	})
+
+	if err := mon.ProcessEvent(event); err != nil {
+		t.Fatalf("ProcessEvent failed for formatted trigger: %v", err)
+	}
+
+	resultConfigs := mon.Configs()
+	if len(resultConfigs) != 1 {
+		t.Fatalf("Expected 1 configuration, got %d", len(resultConfigs))
+	}
+
+	foundDone := false
+	for _, fact := range resultConfigs[0].Facts() {
+		if fact.Name == "Done" {
+			foundDone = true
+		}
+	}
+
+	if !foundDone {
+		t.Fatalf("Expected Done fact after consuming formatted trigger event")
+	}
+}
+
+func TestTimedEventJSONDecoding(t *testing.T) {
+	raw := []byte(`{
+		"time": 0,
+		"event": {
+			"name": "pair",
+			"type": "function",
+			"args": [
+				{
+					"name": "hmac",
+					"type": "function",
+					"args": [
+						{"type":"constant","const_kind":"bytes","value":"0x0102"},
+						{"type":"constant","const_kind":"string","value":"wg"}
+					]
+				},
+				{
+					"name": "pair",
+					"type": "function",
+					"args": [
+						{"type":"constant","const_kind":"int","value":7}
+					]
+				}
+			]
+		}
+	}`)
+
+	var event monitor.TimedEvent
+	if err := json.Unmarshal(raw, &event); err != nil {
+		t.Fatalf("failed to decode event: %v", err)
+	}
+
+	if event.Event == nil {
+		t.Fatalf("expected decoded event payload")
+	}
+
+	if got := event.Event.String(); got != "<hmac(0x0102, 'wg'), <7>>" {
+		t.Fatalf("unexpected event string: %s", got)
+	}
 }

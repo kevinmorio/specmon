@@ -158,7 +158,7 @@ func (c *Config) Hash() uint64 {
 }
 
 func (c *Config) AddSeen(t term.Term) {
-	c.seen = append(c.seen, t)
+	c.seen = append(c.seen, term.ReplaceFormats(t))
 }
 
 func (c *Config) DeleteSeen(t term.Term) bool {

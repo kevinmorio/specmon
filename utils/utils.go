@@ -27,7 +27,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unsafe"
 )
 
 // Indent indents a string by n spaces.
@@ -89,13 +88,15 @@ func Unique[F fmt.Stringer](vals []F) []F {
 // BytesToInt converts a byte slice to an int using the specified byte order.
 // An empty byte slice is converted to 0.
 func BytesToInt(b []byte, order binary.ByteOrder) (int, error) {
-	// Ensure that the byte slice is not longer than the size of an int.
-	if len(b) > int(unsafe.Sizeof(int(0))) {
+	const encodedIntBytes = 8
+
+	// SpecMon encodes integers as 8-byte values regardless of the target word size.
+	if len(b) > encodedIntBytes {
 		return 0, fmt.Errorf("byte slice too long to convert to int: %d", len(b))
 	}
 
-	// Ensure that the byte slice is padded to the size of an int.
-	padded := PadWithByteOrder(b, order, int(unsafe.Sizeof(int(0))))
+	// Ensure that the byte slice is padded to the encoded integer width.
+	padded := PadWithByteOrder(b, order, encodedIntBytes)
 	r := bytes.NewReader(padded)
 
 	var value int64
@@ -103,7 +104,12 @@ func BytesToInt(b []byte, order binary.ByteOrder) (int, error) {
 		return 0, fmt.Errorf("cannot convert bytes to int: %w", err)
 	}
 
-	return int(value), nil
+	converted := int(value)
+	if int64(converted) != value {
+		return 0, fmt.Errorf("cannot convert bytes to int: overflow")
+	}
+
+	return converted, nil
 }
 
 // IntToBytes converts an integer to a byte slice using the specified byte order.

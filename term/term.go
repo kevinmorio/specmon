@@ -391,6 +391,8 @@ func AsBytes(t Term) ([]byte, error) {
 	return nil, ErrTermByteConversion
 }
 
+// return nil, fmt.Errorf("cannot convert '%s' to byte slice", t)
+
 func Must[T any](v T, err error) T {
 	if err != nil {
 		panic(err)
@@ -427,6 +429,91 @@ type WeakTerm struct {
 	Value     any        `json:"value,omitempty"`
 	ConstKind string     `json:"const_kind,omitempty"`
 	Args      []WeakTerm `json:"args,omitempty"`
+}
+
+func (w *WeakTerm) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Name      string          `json:"name,omitempty"`
+		Type      string          `json:"type,omitempty"`
+		Value     json.RawMessage `json:"value,omitempty"`
+		ConstKind string          `json:"const_kind,omitempty"`
+		Args      []WeakTerm      `json:"args,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	w.Name = raw.Name
+	w.Type = raw.Type
+	w.ConstKind = raw.ConstKind
+	w.Args = raw.Args
+
+	value, err := decodeWeakJSONValue(raw.Value, raw.ConstKind)
+	if err != nil {
+		return err
+	}
+	w.Value = value
+
+	return nil
+}
+
+func decodeWeakJSONValue(raw json.RawMessage, constKind string) (any, error) {
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil, nil
+	}
+
+	switch constKind {
+	case ConstantIntKind:
+		return decodeWeakInt(raw)
+	case ConstantStringKind, ConstantBytesKind:
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return nil, fmt.Errorf("expected string constant value: %w", err)
+		}
+		return s, nil
+	case "":
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			return s, nil
+		}
+		return decodeWeakInt(raw)
+	default:
+		return nil, fmt.Errorf("unknown const kind %q", constKind)
+	}
+}
+
+func decodeWeakInt(raw json.RawMessage) (any, error) {
+	var i int
+	if err := json.Unmarshal(raw, &i); err == nil {
+		return i, nil
+	}
+
+	var i64 int64
+	if err := json.Unmarshal(raw, &i64); err == nil {
+		if int64(int(i64)) != i64 {
+			return nil, fmt.Errorf("integer overflow on %d", i64)
+		}
+		return int(i64), nil
+	}
+
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		if float64(int(f)) != f {
+			return nil, fmt.Errorf("floats are not supported, got %f", f)
+		}
+		return int(f), nil
+	}
+
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		i, err := strconv.Atoi(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid integer %q: %w", s, err)
+		}
+		return i, nil
+	}
+
+	return nil, fmt.Errorf("unsupported integer value %s", string(raw))
 }
 
 // ToWeakTerm converts a Term into a serializable weak representation.

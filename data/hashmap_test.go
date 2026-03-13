@@ -25,6 +25,14 @@ import (
 	"github.com/specmon/specmon/data"
 )
 
+type collidingKey struct {
+	id int
+}
+
+func (c collidingKey) Hash() uint64 {
+	return 1
+}
+
 func TestHashMap(t *testing.T) {
 	t.Parallel()
 
@@ -55,12 +63,22 @@ func TestHashMap(t *testing.T) {
 func TestCollision(t *testing.T) {
 	t.Parallel()
 
-	h := data.NewHashMap[string, int]()
+	h := data.NewHashMap[collidingKey, int]()
 
-	h.Set("creamwove", 1)
-	h.Set("quists", 2)
+	h.Set(collidingKey{id: 1}, 1)
+	h.Set(collidingKey{id: 2}, 2)
 
 	if h.Size() != 2 {
 		t.Errorf("%v should have size of %d, got %d", h, 2, h.Size())
+	}
+
+	v, ok := h.Get(collidingKey{id: 1})
+	if !ok || v != 1 {
+		t.Fatalf("expected colliding key 1 to map to 1, got %d, %v", v, ok)
+	}
+
+	v, ok = h.Get(collidingKey{id: 2})
+	if !ok || v != 2 {
+		t.Fatalf("expected colliding key 2 to map to 2, got %d, %v", v, ok)
 	}
 }

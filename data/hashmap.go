@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"hash"
 	"hash/fnv"
+	"reflect"
 	"sort"
 	"strings"
 )
@@ -31,7 +32,7 @@ type Hasher interface {
 }
 
 type HashMap[K, V any] struct {
-	m map[uint64]Entry[K, V]
+	m map[uint64][]Entry[K, V]
 	h hash.Hash64
 }
 
@@ -42,7 +43,7 @@ type Entry[K, V any] struct {
 
 func NewHashMap[K, V any]() *HashMap[K, V] {
 	return &HashMap[K, V]{
-		m: make(map[uint64]Entry[K, V]),
+		m: make(map[uint64][]Entry[K, V]),
 		h: fnv.New64a(),
 	}
 }
@@ -66,28 +67,67 @@ func (h *HashMap[K, V]) hash(k K) uint64 {
 }
 
 func (h *HashMap[K, V]) Get(k K) (V, bool) {
-	entry, ok := h.m[h.hash(k)]
+	entries, ok := h.m[h.hash(k)]
+	if !ok {
+		var zero V
+		return zero, false
+	}
 
-	return entry.Value, ok
+	for _, entry := range entries {
+		if hashMapKeysEqual(entry.Key, k) {
+			return entry.Value, true
+		}
+	}
+
+	var zero V
+	return zero, false
 }
 
 func (h *HashMap[K, V]) Set(k K, v V) {
-	h.m[h.hash(k)] = Entry[K, V]{k, v}
+	hash := h.hash(k)
+	entries := h.m[hash]
+	for i, entry := range entries {
+		if hashMapKeysEqual(entry.Key, k) {
+			entries[i] = Entry[K, V]{k, v}
+			h.m[hash] = entries
+			return
+		}
+	}
+
+	h.m[hash] = append(entries, Entry[K, V]{k, v})
 }
 
 func (h *HashMap[K, V]) Remove(k K) {
-	delete(h.m, h.hash(k))
+	hash := h.hash(k)
+	entries, ok := h.m[hash]
+	if !ok {
+		return
+	}
+
+	for i, entry := range entries {
+		if hashMapKeysEqual(entry.Key, k) {
+			entries = append(entries[:i], entries[i+1:]...)
+			if len(entries) == 0 {
+				delete(h.m, hash)
+			} else {
+				h.m[hash] = entries
+			}
+			return
+		}
+	}
 }
 
 func (h *HashMap[K, V]) Empty() bool {
-	return len(h.m) == 0
+	return h.Size() == 0
 }
 
 func (h *HashMap[K, V]) Keys() []K {
 	keys := make([]K, 0, h.Size())
 
-	for _, entry := range h.m {
-		keys = append(keys, entry.Key)
+	for _, entries := range h.m {
+		for _, entry := range entries {
+			keys = append(keys, entry.Key)
+		}
 	}
 
 	return keys
@@ -96,25 +136,34 @@ func (h *HashMap[K, V]) Keys() []K {
 func (h *HashMap[K, V]) Values() []V {
 	values := make([]V, 0, h.Size())
 
-	for _, entry := range h.m {
-		values = append(values, entry.Value)
+	for _, entries := range h.m {
+		for _, entry := range entries {
+			values = append(values, entry.Value)
+		}
 	}
 
 	return values
 }
 
 func (h *HashMap[K, V]) Size() int {
-	return len(h.m)
+	size := 0
+	for _, entries := range h.m {
+		size += len(entries)
+	}
+
+	return size
 }
 
 func (h *HashMap[K, V]) String() string {
 	s := "HashMap["
 
-	for _, entry := range h.m {
-		s += fmt.Sprintf("%v", entry.Key)
-		s += ":"
-		s += fmt.Sprintf("%v", entry.Value)
-		s += " "
+	for _, entries := range h.m {
+		for _, entry := range entries {
+			s += fmt.Sprintf("%v", entry.Key)
+			s += ":"
+			s += fmt.Sprintf("%v", entry.Value)
+			s += " "
+		}
 	}
 	s = strings.TrimSuffix(s, " ")
 
@@ -122,9 +171,11 @@ func (h *HashMap[K, V]) String() string {
 }
 
 func (h *HashMap[K, V]) Iterate(f func(K, V) bool) {
-	for _, entry := range h.m {
-		if !f(entry.Key, entry.Value) {
-			break
+	for _, entries := range h.m {
+		for _, entry := range entries {
+			if !f(entry.Key, entry.Value) {
+				return
+			}
 		}
 	}
 }
@@ -141,20 +192,21 @@ func (h *HashMap[K, V]) IterateSorted(f func(K, V) bool) {
 	})
 
 	for _, k := range keys {
-		entry := h.m[k]
-		if !f(entry.Key, entry.Value) {
-			break
+		for _, entry := range h.m[k] {
+			if !f(entry.Key, entry.Value) {
+				return
+			}
 		}
 	}
 }
 
 func (h *HashMap[K, V]) Clone() *HashMap[K, V] {
 	c := &HashMap[K, V]{
-		m: make(map[uint64]Entry[K, V], len(h.m)),
+		m: make(map[uint64][]Entry[K, V], len(h.m)),
 	}
 
-	for k, v := range h.m {
-		c.m[k] = v
+	for k, entries := range h.m {
+		c.m[k] = append([]Entry[K, V](nil), entries...)
 	}
 
 	return c
@@ -163,9 +215,15 @@ func (h *HashMap[K, V]) Clone() *HashMap[K, V] {
 func (h *HashMap[K, V]) Extend(hp *HashMap[K, V]) *HashMap[K, V] {
 	u := h.Clone()
 
-	for k, v := range hp.m {
-		u.m[k] = v
+	for _, entries := range hp.m {
+		for _, entry := range entries {
+			u.Set(entry.Key, entry.Value)
+		}
 	}
 
 	return u
+}
+
+func hashMapKeysEqual[K any](a, b K) bool {
+	return reflect.DeepEqual(a, b)
 }
