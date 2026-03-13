@@ -26,7 +26,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unsafe"
 )
@@ -140,25 +139,6 @@ func Pluralize(s string, n int) string {
 	}
 
 	return s + "s"
-}
-
-func KillProcess(pid int) error {
-	if pid == -1 {
-		return nil
-	}
-
-	// Find the process by PID
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return fmt.Errorf("failed to find process with pid %d: %w", pid, err)
-	}
-
-	// Send SIGKILL to forcefully terminate the process
-	if err := process.Signal(syscall.SIGKILL); err != nil {
-		return fmt.Errorf("failed to send SIGKILL to process with pid %d: %w", pid, err)
-	}
-
-	return nil
 }
 
 func MedianDuration(numbers []time.Duration) float64 {
