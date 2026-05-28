@@ -207,3 +207,120 @@ func BenchmarkConfigHashHot(b *testing.B) {
 		_ = c.Hash()
 	}
 }
+
+// hasFact reports whether c.FactsByName(name) contains a fact Equal
+// to f. Used by Clone tests as a structural check that does not rely
+// on slice-header identity.
+func hasFact(c *monitor.Config, f *rule.Fact) bool {
+	for _, g := range c.FactsByName(f.Name) {
+		if g != nil && g.Equal(f) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestCloneSourceMutationDoesNotCorruptClone guards the Fix 3
+// invariant: after c.Clone() returns d, ANY subsequent mutation on c
+// must not be observable in d. Before the fix Clone left
+// c.ownedBuckets unchanged, so c.DeleteFact would short-circuit
+// ensureOwned and mutate the bucket array shared with d, corrupting
+// d's view of the deleted fact.
+func TestCloneSourceMutationDoesNotCorruptClone(t *testing.T) {
+	f := newFFact(term.NewConstant("a"))
+
+	c := monitor.NewConfig()
+	c.AddFact(f)
+
+	d := c.Clone()
+	if !hasFact(d, f) {
+		t.Fatalf("d is missing f immediately after Clone")
+	}
+
+	// Mutate the source; the clone must not change.
+	if !c.DeleteFact(f) {
+		t.Fatalf("c.DeleteFact(f) returned false; precondition broken")
+	}
+
+	if !hasFact(d, f) {
+		t.Errorf("c.DeleteFact corrupted d: d no longer contains f. "+
+			"Bucket = %v", d.FactsByName(f.Name))
+	}
+	// Stronger: the slice header length must still match what d had
+	// before the mutation. slices.Delete shifts and shortens the
+	// source's slice; the clone's slice header is independent so its
+	// length must be unchanged.
+	if got := len(d.FactsByName(f.Name)); got != 1 {
+		t.Errorf("d.FactsByName(F) length changed after c mutation: got %d, want 1", got)
+	}
+}
+
+// TestCloneSourceAddDoesNotCorruptClone covers the AddFact path: if c
+// adds a fact AFTER cloning, the clone must not silently gain that
+// fact through a shared underlying array. AddFact uses append, which
+// CAN reuse the existing array's spare capacity; ensureOwned must
+// copy first.
+func TestCloneSourceAddDoesNotCorruptClone(t *testing.T) {
+	f := newFFact(term.NewConstant("a"))
+	g := newFFact(term.NewConstant("b"))
+
+	c := monitor.NewConfig()
+	c.AddFact(f)
+	// At this point c.factsByName["F"] is a length-1 slice. Cap may be
+	// 1 (no spare) or 2+ (depending on growth policy). To stress the
+	// spare-cap path, pre-grow the bucket. AddFact then DeleteFact
+	// gives the slice spare capacity.
+	c.AddFact(g)
+	c.DeleteFact(g) // bucket back to [f] with cap >= 2
+
+	d := c.Clone()
+	if len(d.FactsByName(f.Name)) != 1 {
+		t.Fatalf("d should have one fact; got %d", len(d.FactsByName(f.Name)))
+	}
+
+	// Add a fresh fact to c. If c kept ownership and append reuses
+	// the spare slot, the underlying array's [1] becomes the new
+	// fact, but d's slice header still says length 1 so d doesn't
+	// see it directly. The smoking gun: if we then mutate c's
+	// slice contents (e.g. via DeleteFact), d's [0] would shift.
+	h := newFFact(term.NewConstant("c"))
+	c.AddFact(h)
+
+	// Now delete f from c. With the bug, slices.Delete on the shared
+	// array shifts h into slot 0 of d's view.
+	if !c.DeleteFact(f) {
+		t.Fatalf("c.DeleteFact(f) returned false")
+	}
+
+	bucket := d.FactsByName(f.Name)
+	if len(bucket) != 1 {
+		t.Fatalf("d.FactsByName length changed: got %d, want 1", len(bucket))
+	}
+	if bucket[0] == nil || !bucket[0].Equal(f) {
+		t.Errorf("d's bucket[0] was mutated by c's later AddFact + DeleteFact: got %v, want F(a)", bucket[0])
+	}
+}
+
+// TestCloneIsolatedAcrossSiblings covers the case of two clones from
+// the same source: mutations on one sibling must not be observed by
+// the other. Same shared-array hazard, just between two clones.
+func TestCloneIsolatedAcrossSiblings(t *testing.T) {
+	f := newFFact(term.NewConstant("a"))
+
+	c := monitor.NewConfig()
+	c.AddFact(f)
+
+	d1 := c.Clone()
+	d2 := c.Clone()
+
+	if !d1.DeleteFact(f) {
+		t.Fatalf("d1.DeleteFact(f) returned false")
+	}
+
+	if !hasFact(d2, f) {
+		t.Errorf("d1's DeleteFact leaked into d2")
+	}
+	if !hasFact(c, f) {
+		t.Errorf("d1's DeleteFact leaked into c")
+	}
+}

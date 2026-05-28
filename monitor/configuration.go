@@ -38,11 +38,26 @@ import (
 // all go through the bucketed view. The total fact count is tracked
 // incrementally in factCount so AddFact/DeleteFact don't have to sum
 // buckets, and Facts() materialises a flat view only on demand.
+//
+// Clone is SYMMETRIC copy-on-write: when c.Clone() returns d, BOTH
+// configs share the same bucket slice headers AND both have
+// ownedBuckets cleared. The first AddFact / DeleteFact on either side
+// allocates a fresh bucket via ensureOwned and records ownership on
+// that side only. The other side keeps the original shared array.
+// This keeps Clone O(distinct predicate names) and amortises bucket
+// copies to actual mutations, while ruling out the silent-corruption
+// hazard where the source mutates a bucket the clone still references.
 type Config struct {
 	// factsByName buckets facts by predicate name so conflictSetFacts can
 	// iterate only the relevant predicate. Maintained incrementally by
 	// AddFact / DeleteFact / Clone.
 	factsByName map[string][]*rule.Fact
+
+	// ownedBuckets[name] is true when this Config owns the slice header
+	// at factsByName[name] and is free to mutate it (append in place,
+	// slices.Delete). A bucket not in ownedBuckets is shared with the
+	// Clone source and must be copied before mutation.
+	ownedBuckets map[string]bool
 
 	// factCount is the total number of facts across all buckets, kept in
 	// sync with factsByName so callers don't have to sum bucket sizes.
@@ -65,10 +80,24 @@ type Config struct {
 // NewConfig returns a new configuration.
 func NewConfig() *Config {
 	return &Config{
-		factsByName: make(map[string][]*rule.Fact),
-		seen:        []term.Term{},
-		trace:       []*rule.Fact{},
+		factsByName:  make(map[string][]*rule.Fact),
+		ownedBuckets: make(map[string]bool),
+		seen:         []term.Term{},
+		trace:        []*rule.Fact{},
 	}
+}
+
+// ensureOwned returns a slice for predicate name that the caller is free
+// to mutate. If the current bucket is shared with a Clone source, it's
+// copied first.
+func (c *Config) ensureOwned(name string) []*rule.Fact {
+	if c.ownedBuckets[name] {
+		return c.factsByName[name]
+	}
+	bucket := slices.Clone(c.factsByName[name])
+	c.factsByName[name] = bucket
+	c.ownedBuckets[name] = true
+	return bucket
 }
 
 // Facts materialises the flat fact list by concatenating every bucket.
@@ -94,9 +123,14 @@ func (c *Config) DeleteFact(t *rule.Fact) bool {
 		return false
 	}
 
+	// Take ownership before mutating in place. ensureOwned returns the
+	// (possibly copied) slice we should now update; the prior i is still
+	// valid because the indices match up to the deletion point.
+	bucket = c.ensureOwned(t.Name)
 	bucket = slices.Delete(bucket, i, i+1)
 	if len(bucket) == 0 {
 		delete(c.factsByName, t.Name)
+		delete(c.ownedBuckets, t.Name)
 	} else {
 		c.factsByName[t.Name] = bucket
 	}
@@ -109,7 +143,8 @@ func (c *Config) DeleteFact(t *rule.Fact) bool {
 }
 
 func (c *Config) AddFact(t *rule.Fact) {
-	c.factsByName[t.Name] = append(c.factsByName[t.Name], t)
+	bucket := c.ensureOwned(t.Name)
+	c.factsByName[t.Name] = append(bucket, t)
 	c.factCount++
 	c.invalidateHash()
 }
@@ -136,15 +171,29 @@ func (c *Config) Clone() *Config {
 	d.trace = slices.Clone(c.trace)
 	d.factCount = c.factCount
 
-	// Copy the factsByName index so the clone can be mutated independently.
-	// The bucket slices are cloned (shallow), so each clone owns its slice
-	// header but the *rule.Fact pointers inside are shared (Facts are
-	// treated as immutable after construction).
+	// Copy the factsByName map header but share the bucket slice headers.
+	// d.ownedBuckets is empty (set in NewConfig) so d will copy-on-write
+	// on its first mutation per bucket.
 	if len(c.factsByName) > 0 {
 		d.factsByName = make(map[string][]*rule.Fact, len(c.factsByName))
 		for k, v := range c.factsByName {
-			d.factsByName[k] = slices.Clone(v)
+			d.factsByName[k] = v
 		}
+	}
+
+	// Symmetric step: relinquish ownership on the source. Any bucket
+	// that c previously owned is now shared with d, so the next
+	// mutation on c MUST also copy first via ensureOwned. Without this
+	// reset, a subsequent c.DeleteFact would short-circuit ensureOwned
+	// and slices.Delete would mutate the underlying array d still
+	// references, silently corrupting d's view.
+	//
+	// We allocate a fresh empty map rather than clear() the existing
+	// one because callers may have captured the old map header (none
+	// do today, but the semantics are simpler if Clone never aliases
+	// internal state across the two configs).
+	if len(c.ownedBuckets) > 0 {
+		c.ownedBuckets = make(map[string]bool)
 	}
 
 	return d
