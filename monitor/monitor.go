@@ -321,7 +321,7 @@ func (m *Monitor) findPossibleEvents() [][]term.Term {
 	for i, c := range m.configs.Values() {
 		var e []term.Term
 		for _, r := range allRules {
-			for _, b := range conflictSetFacts(c.facts, r.LHS).Values() {
+			for _, b := range conflictSetFactsForConfig(c, r.LHS).Values() {
 				s := r.Subst(b)
 				e = append(e, s.Hints()...)
 				e = append(e, s.Triggers()...)
@@ -392,7 +392,7 @@ func (m *Monitor) handleTriggers(c *Config, a term.Term, r *rule.Rule) (*data.Ha
 		lhsPatterns = r.LHS
 	}
 
-	for _, b := range conflictSetFacts(c.facts, lhsPatterns).Values() {
+	for _, b := range conflictSetFactsForConfig(c, lhsPatterns).Values() {
 		var bt *term.Binding
 		if triggerErr == nil {
 			bt = triggerBinding.Extend(b)
@@ -473,7 +473,7 @@ func (m *Monitor) handleHints(c *Config, a term.Term, r *rule.Rule) (*data.HashS
 		lhsPatterns = r.LHS
 	}
 
-	for _, b := range conflictSetFacts(c.facts, lhsPatterns).Values() {
+	for _, b := range conflictSetFactsForConfig(c, lhsPatterns).Values() {
 		var hb *term.Binding
 		if hintErr == nil {
 			hb = hintBinding.Extend(b)
@@ -551,7 +551,7 @@ func (m *Monitor) handleEpsilon(c *Config) (*Config, []*rule.Fact, error) {
 		if !canMatchLHS(c, m.requirements[r]) {
 			continue
 		}
-		for _, b := range conflictSetFacts(c.facts, r.LHS).Values() {
+		for _, b := range conflictSetFactsForConfig(c, r.LHS).Values() {
 			log.Infof("epsilon rule %s is applicable\n  binding: %s", r.Name, b)
 
 			d, acts, err := c.ApplyRule(r, b)

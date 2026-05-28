@@ -551,6 +551,28 @@ func conflictSetFacts(facts []*rule.Fact, body []*rule.Fact) *bindingSet {
 	)
 }
 
+// conflictSetFactsForConfig is like conflictSetFacts but draws candidates
+// from c.factsByName. It builds the items slice from only the predicate
+// buckets a body pattern references, skipping facts whose predicate the
+// rule's LHS never mentions. For configs with thousands of unrelated
+// facts this keeps the conflict-set pre-pass O(|interesting facts|)
+// instead of O(|all facts|).
+func conflictSetFactsForConfig(c *Config, body []*rule.Fact) *bindingSet {
+	// Collect the distinct predicate names referenced by body patterns.
+	// Most rules have only a handful, so a small set suffices.
+	seen := make(map[string]struct{}, len(body))
+	var items []*rule.Fact
+	for _, p := range body {
+		name := p.Name
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		items = append(items, c.factsByName[name]...)
+	}
+	return conflictSetFacts(items, body)
+}
+
 // conflictSetTerms matches a sequence of term patterns against a set of seen terms.
 // It builds a local index by function name and orders patterns by selectivity.
 // Seen terms are not deduplicated (passed nil hash/equal): the seen set is

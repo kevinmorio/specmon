@@ -41,6 +41,11 @@ type Config struct {
 	// DeleteFact / Clone.
 	factCounts map[string]int
 
+	// factsByName buckets facts by predicate name so conflictSetFacts can
+	// iterate only the relevant predicate, not all of c.facts. Maintained
+	// incrementally by AddFact / DeleteFact / Clone.
+	factsByName map[string][]*rule.Fact
+
 	// seen is a multiset of events that have been seen in the current configuration
 	// and that have not been processed yet.
 	seen []term.Term
@@ -58,10 +63,11 @@ type Config struct {
 // NewConfig returns a new configuration.
 func NewConfig() *Config {
 	return &Config{
-		facts:      []*rule.Fact{},
-		factCounts: make(map[string]int),
-		seen:       []term.Term{},
-		trace:      []*rule.Fact{},
+		facts:       []*rule.Fact{},
+		factCounts:  make(map[string]int),
+		factsByName: make(map[string][]*rule.Fact),
+		seen:        []term.Term{},
+		trace:       []*rule.Fact{},
 	}
 }
 
@@ -86,6 +92,18 @@ func (c *Config) DeleteFact(t *rule.Fact) bool {
 	} else {
 		c.factCounts[removed.Name] = n - 1
 	}
+	if bucket := c.factsByName[removed.Name]; len(bucket) > 0 {
+		// Remove the first matching pointer-or-equal entry from the bucket.
+		bi := slices.IndexFunc(bucket, func(s *rule.Fact) bool { return removed.Equal(s) })
+		if bi >= 0 {
+			bucket = slices.Delete(bucket, bi, bi+1)
+			if len(bucket) == 0 {
+				delete(c.factsByName, removed.Name)
+			} else {
+				c.factsByName[removed.Name] = bucket
+			}
+		}
+	}
 	c.invalidateHash()
 
 	log.Tracef("removed %s\n", t)
@@ -96,7 +114,14 @@ func (c *Config) DeleteFact(t *rule.Fact) bool {
 func (c *Config) AddFact(t *rule.Fact) {
 	c.facts = append(c.facts, t)
 	c.factCounts[t.Name]++
+	c.factsByName[t.Name] = append(c.factsByName[t.Name], t)
 	c.invalidateHash()
+}
+
+// FactsByName returns the slice of facts in c whose predicate name matches.
+// The returned slice is owned by the Config; callers must not mutate it.
+func (c *Config) FactsByName(name string) []*rule.Fact {
+	return c.factsByName[name]
 }
 
 func (c *Config) Clone() *Config {
@@ -111,6 +136,17 @@ func (c *Config) Clone() *Config {
 		d.factCounts = make(map[string]int, len(c.factCounts))
 		for k, v := range c.factCounts {
 			d.factCounts[k] = v
+		}
+	}
+
+	// Copy the factsByName index so the clone can be mutated independently.
+	// The bucket slices are cloned (shallow), so each clone owns its slice
+	// header but the *rule.Fact pointers inside are shared (Facts are
+	// treated as immutable after construction).
+	if len(c.factsByName) > 0 {
+		d.factsByName = make(map[string][]*rule.Fact, len(c.factsByName))
+		for k, v := range c.factsByName {
+			d.factsByName[k] = slices.Clone(v)
 		}
 	}
 
