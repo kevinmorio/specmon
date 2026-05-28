@@ -924,12 +924,12 @@ func UnifyReplace(t, g, h Term) Term {
 		return SubstBinding(b, h)
 	}
 
-	u := NewFunction(f.Name, make([]Term, len(f.Args)))
+	args := make([]Term, len(f.Args))
 	for i, s := range f.Args {
-		u.Args[i] = UnifyReplace(s, g, h)
+		args[i] = UnifyReplace(s, g, h)
 	}
 
-	return u
+	return NewFunction(f.Name, args)
 }
 
 func UnifyReplaceRecursive(t, g, h Term) Term {
