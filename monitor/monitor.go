@@ -745,7 +745,7 @@ func (m *Monitor) ProcessEvents(events <-chan *TimedEvent, rewrite bool, pid int
 			if err != nil {
 				log.Warnf("\nfinal configurations (%d)\n", m.configs.Size())
 				for _, c := range m.configs.Values() {
-					for _, f := range c.facts {
+					for _, f := range c.Facts() {
 						log.Warnf("  %s\n", f.Name)
 					}
 				}
@@ -774,7 +774,7 @@ func (m *Monitor) ProcessEvents(events <-chan *TimedEvent, rewrite bool, pid int
 
 		log.Warnf("\nfinal configurations (%d)\n", m.configs.Size())
 		for _, c := range m.configs.Values() {
-			for _, f := range c.facts {
+			for _, f := range c.Facts() {
 				log.Warnf("  %s\n", f.Name)
 			}
 		}

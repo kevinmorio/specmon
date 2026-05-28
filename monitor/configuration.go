@@ -32,19 +32,21 @@ import (
 )
 
 // Config is a configuration of the monitor.
+//
+// Facts are stored bucketed by predicate name in factsByName; there is no
+// separate flat slice. CountByName / FactsByName / conflict-set callers
+// all go through the bucketed view. The total fact count is tracked
+// incrementally in factCount so AddFact/DeleteFact don't have to sum
+// buckets, and Facts() materialises a flat view only on demand.
 type Config struct {
-	// facts is a multiset of facts that are true in the current configuration.
-	facts []*rule.Fact
-
-	// factCounts indexes facts by predicate name so CountByName is O(1)
-	// instead of walking c.facts. Maintained incrementally by AddFact /
-	// DeleteFact / Clone.
-	factCounts map[string]int
-
 	// factsByName buckets facts by predicate name so conflictSetFacts can
-	// iterate only the relevant predicate, not all of c.facts. Maintained
-	// incrementally by AddFact / DeleteFact / Clone.
+	// iterate only the relevant predicate. Maintained incrementally by
+	// AddFact / DeleteFact / Clone.
 	factsByName map[string][]*rule.Fact
+
+	// factCount is the total number of facts across all buckets, kept in
+	// sync with factsByName so callers don't have to sum bucket sizes.
+	factCount int
 
 	// seen is a multiset of events that have been seen in the current configuration
 	// and that have not been processed yet.
@@ -63,47 +65,42 @@ type Config struct {
 // NewConfig returns a new configuration.
 func NewConfig() *Config {
 	return &Config{
-		facts:       []*rule.Fact{},
-		factCounts:  make(map[string]int),
 		factsByName: make(map[string][]*rule.Fact),
 		seen:        []term.Term{},
 		trace:       []*rule.Fact{},
 	}
 }
 
-// Facts returns the facts of the configuration.
+// Facts materialises the flat fact list by concatenating every bucket.
+// The returned slice is freshly allocated; the order is bucket-iteration
+// order (Go map iteration, not insertion order).
 func (c *Config) Facts() []*rule.Fact {
-	return c.facts
+	out := make([]*rule.Fact, 0, c.factCount)
+	for _, bucket := range c.factsByName {
+		out = append(out, bucket...)
+	}
+	return out
 }
 
 func (c *Config) DeleteFact(t *rule.Fact) bool {
-	i := slices.IndexFunc(c.facts, func(s *rule.Fact) bool {
+	bucket, ok := c.factsByName[t.Name]
+	if !ok {
+		return false
+	}
+	i := slices.IndexFunc(bucket, func(s *rule.Fact) bool {
 		return t.Equal(s)
 	})
-
 	if i == -1 {
 		return false
 	}
 
-	removed := c.facts[i]
-	c.facts = slices.Delete(c.facts, i, i+1)
-	if n := c.factCounts[removed.Name]; n <= 1 {
-		delete(c.factCounts, removed.Name)
+	bucket = slices.Delete(bucket, i, i+1)
+	if len(bucket) == 0 {
+		delete(c.factsByName, t.Name)
 	} else {
-		c.factCounts[removed.Name] = n - 1
+		c.factsByName[t.Name] = bucket
 	}
-	if bucket := c.factsByName[removed.Name]; len(bucket) > 0 {
-		// Remove the first matching pointer-or-equal entry from the bucket.
-		bi := slices.IndexFunc(bucket, func(s *rule.Fact) bool { return removed.Equal(s) })
-		if bi >= 0 {
-			bucket = slices.Delete(bucket, bi, bi+1)
-			if len(bucket) == 0 {
-				delete(c.factsByName, removed.Name)
-			} else {
-				c.factsByName[removed.Name] = bucket
-			}
-		}
-	}
+	c.factCount--
 	c.invalidateHash()
 
 	log.Tracef("removed %s\n", t)
@@ -112,32 +109,32 @@ func (c *Config) DeleteFact(t *rule.Fact) bool {
 }
 
 func (c *Config) AddFact(t *rule.Fact) {
-	c.facts = append(c.facts, t)
-	c.factCounts[t.Name]++
 	c.factsByName[t.Name] = append(c.factsByName[t.Name], t)
+	c.factCount++
 	c.invalidateHash()
 }
 
-// FactsByName returns the slice of facts in c whose predicate name matches.
-// The returned slice is owned by the Config; callers must not mutate it.
+// FactsByName returns a fresh slice of the facts whose predicate name
+// matches. The slice is independent of the Config's internal bucket so
+// callers may inspect or sort it without breaking factCount, the hash
+// cache, or copy-on-write ownership invariants. Returns nil when no
+// fact with that name exists.
+//
+// Internal call sites that need the bucket WITHOUT the per-call alloc
+// (the conflictSet hot path) read c.factsByName[name] directly.
 func (c *Config) FactsByName(name string) []*rule.Fact {
-	return c.factsByName[name]
+	bucket := c.factsByName[name]
+	if len(bucket) == 0 {
+		return nil
+	}
+	return slices.Clone(bucket)
 }
 
 func (c *Config) Clone() *Config {
 	d := NewConfig()
-	d.facts = slices.Clone(c.facts)
 	d.seen = slices.Clone(c.seen)
 	d.trace = slices.Clone(c.trace)
-
-	// Copy the factCounts map so further mutations on the clone don't
-	// disturb the original.
-	if len(c.factCounts) > 0 {
-		d.factCounts = make(map[string]int, len(c.factCounts))
-		for k, v := range c.factCounts {
-			d.factCounts[k] = v
-		}
-	}
+	d.factCount = c.factCount
 
 	// Copy the factsByName index so the clone can be mutated independently.
 	// The bucket slices are cloned (shallow), so each clone owns its slice
@@ -153,33 +150,34 @@ func (c *Config) Clone() *Config {
 	return d
 }
 
+// FactsAsSlice is an alias for Facts kept for callers that already used
+// the older name.
 func (c *Config) FactsAsSlice() []*rule.Fact {
-	return c.facts
+	return c.Facts()
 }
 
 func (c *Config) FactsAsSliceWithName(name string) []*rule.Fact {
-	var T []*rule.Fact
-	for _, t := range c.facts {
-		if t.Name == name {
-			T = append(T, t)
-		}
+	bucket := c.factsByName[name]
+	if len(bucket) == 0 {
+		return nil
 	}
-
-	return T
+	return slices.Clone(bucket)
 }
 
 // CountByName returns how many facts in c carry the given predicate name.
 // Used by the rule-applicability gate to skip rules whose LHS requires
 // more instances of a predicate than the config currently has. O(1)
-// via the factCounts index maintained by AddFact / DeleteFact.
+// via factsByName.
 func (c *Config) CountByName(name string) int {
-	return c.factCounts[name]
+	return len(c.factsByName[name])
 }
 
 func (c *Config) String() string {
-	facts := make([]string, len(c.facts))
-	for i := range c.facts {
-		facts[i] = c.facts[i].String()
+	facts := make([]string, 0, c.factCount)
+	for _, bucket := range c.factsByName {
+		for _, f := range bucket {
+			facts = append(facts, f.String())
+		}
 	}
 	factsStr := strings.Join(facts, "\n")
 
@@ -198,37 +196,110 @@ func (c *Config) String() string {
 	return fmt.Sprintf("{ [ %s ] | %s | %s }", factsStr, seenStr, traceStr)
 }
 
+// Hash returns a canonical 64-bit digest of the configuration. The result
+// is independent of the order in which facts were added (multiset
+// semantics) but DEPENDS on multiplicity: [F, F] hashes differently from
+// [F] and from []. This is required for correctness because
+// data.HashMap.Set keys solely by the returned hash (no Equal fallback),
+// so any cardinality collision would silently merge structurally
+// distinct configurations.
+//
+// Implementation: each fact / seen-event contributes a 64-bit mixed
+// hash that is then ADDED (uint64, wrapping) into the section
+// accumulator. Sum is associative-commutative, so the digest is
+// order-independent. Unlike XOR, sum does not cancel duplicates:
+// 2 * h(F) != 0, so [F, F] and [] produce different accumulators.
+// Sum is O(N) with zero allocations, matching the original XOR
+// implementation's hot-path cost.
+//
+// Each fact hash is "mixed" through a multiplier before summing.
+// Without mixing, raw 64-bit FNV-1a values cluster in the low bits
+// for short keys and the sum becomes biased. The mixer is a single
+// xorshift+multiply step from splitmix64, which is cheap and
+// produces a good avalanche.
+//
+// The three sections are folded into one final FNV-1a value with a
+// section-tag byte and section length so a fact and a seen-event
+// with equal hashes contribute distinct bytes, and so sections of
+// different lengths cannot alias.
+//
+// The result is memoised in hashCache; mutators must call invalidateHash.
 func (c *Config) Hash() uint64 {
 	if c.hashCacheSet {
 		return c.hashCache
 	}
+
+	var factsAcc uint64
+	for _, bucket := range c.factsByName {
+		for _, f := range bucket {
+			factsAcc += mix64(f.Hash())
+		}
+	}
+
+	var seenAcc uint64
+	for _, t := range c.seen {
+		seenAcc += mix64(t.Hash())
+	}
+
+	// trace is ordered: rule applications are recorded in firing
+	// order. Multiply by a step constant so swapping two entries
+	// changes the digest. If trace ever becomes a multiset, replace
+	// this loop with the sum pattern above.
+	var traceAcc uint64
+	for i, f := range c.trace {
+		traceAcc += mix64(f.Hash()) * uint64(i+1)
+	}
+
 	h := fnv.New64a()
+	var buf [8]byte
+	// Sections are tagged + length-prefixed so cross-section
+	// aliasing on equal accumulator values is impossible.
+	h.Write([]byte{hashSectionFacts})
+	// factCount is a fact tally maintained by AddFact/DeleteFact and is
+	// never negative, so the uint64 conversion cannot overflow.
+	binary.LittleEndian.PutUint64(buf[:], uint64(c.factCount)) //nolint:gosec
+	h.Write(buf[:])
+	binary.LittleEndian.PutUint64(buf[:], factsAcc)
+	h.Write(buf[:])
 
-	for _, f := range c.facts {
-		hash := f.Hash()
-		var buf [8]byte
-		binary.LittleEndian.PutUint64(buf[:], hash)
-		h.Write(buf[:])
-	}
+	h.Write([]byte{hashSectionSeen})
+	binary.LittleEndian.PutUint64(buf[:], uint64(len(c.seen)))
+	h.Write(buf[:])
+	binary.LittleEndian.PutUint64(buf[:], seenAcc)
+	h.Write(buf[:])
 
-	for _, f := range c.trace {
-		hash := f.Hash()
-		var buf [8]byte
-		binary.LittleEndian.PutUint64(buf[:], hash)
-		h.Write(buf[:])
-	}
-
-	for _, f := range c.seen {
-		hash := f.Hash()
-		var buf [8]byte
-		binary.LittleEndian.PutUint64(buf[:], hash)
-		h.Write(buf[:])
-	}
+	h.Write([]byte{hashSectionTrace})
+	binary.LittleEndian.PutUint64(buf[:], uint64(len(c.trace)))
+	h.Write(buf[:])
+	binary.LittleEndian.PutUint64(buf[:], traceAcc)
+	h.Write(buf[:])
 
 	c.hashCache = h.Sum64()
 	c.hashCacheSet = true
 	return c.hashCache
 }
+
+// mix64 is the splitmix64 finalizer (Stafford variant 13). It
+// scrambles low-bit clustering in FNV-1a output so the per-section
+// sum has good avalanche even when many input hashes share their
+// low bits.
+func mix64(x uint64) uint64 {
+	x ^= x >> 30
+	x *= 0xbf58476d1ce4e5b9
+	x ^= x >> 27
+	x *= 0x94d049bb133111eb
+	x ^= x >> 31
+	return x
+}
+
+// Section tags used in Hash(); changing these values invalidates the
+// memoised digests of any persisted configuration set, but those are
+// never written to disk so a renumbering is safe.
+const (
+	hashSectionFacts byte = 1
+	hashSectionSeen  byte = 2
+	hashSectionTrace byte = 3
+)
 
 // invalidateHash clears the memoized Hash. Callers that mutate facts,
 // seen, or trace must call this so the next Hash() recomputes.
