@@ -267,6 +267,13 @@ func (f *Function) String() string {
 	return fmt.Sprintf("%s%s%s%s", fName, openDelim, str, closeDelim)
 }
 
+// Hash returns a 64-bit FNV-1a digest of the constant's type tag and
+// value bytes. Recomputed on every call - terms are mutable through
+// exported fields (Value), so any cache would risk going stale on
+// post-construction mutation. The recompute is one FNV pass over a
+// short byte slice; profiling showed the prior lazy cache won at most
+// a few percent and was the source of a data race (concurrent calls
+// raced on the cache write).
 func (c *Constant[T]) Hash() uint64 {
 	h := fnv.New64a()
 
@@ -285,6 +292,8 @@ func (c *Constant[T]) Hash() uint64 {
 	return h.Sum64()
 }
 
+// Hash returns a 64-bit FNV-1a digest of the variable's name and type
+// tag. Recomputed on every call; see Constant.Hash for rationale.
 func (v *Variable) Hash() uint64 {
 	h := fnv.New64a()
 
@@ -294,6 +303,16 @@ func (v *Variable) Hash() uint64 {
 	return h.Sum64()
 }
 
+// Hash returns a 64-bit FNV-1a digest of the function's name, type
+// tag, and the recursively-hashed args. Recomputed on every call; see
+// Constant.Hash for rationale.
+//
+// Cost note: a deeply nested Function costs O(total subterms) FNV
+// work per call. In the monitor hot path each Function is built from
+// freshly-constructed args and hashed once via Fact.Hash, which IS
+// cached on the fact wrapper (rule/fact.go). Variables that recur
+// across many facts are cheap to rehash because their hash input is
+// just (name, type) bytes.
 func (f *Function) Hash() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte(f.Name))

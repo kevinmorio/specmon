@@ -31,7 +31,6 @@ import (
 	"github.com/specmon/specmon/term"
 )
 
-
 // Config is a configuration of the monitor.
 type Config struct {
 	// facts is a multiset of facts that are true in the current configuration.
@@ -43,6 +42,12 @@ type Config struct {
 
 	// trace is a list of action facts that have been recorded in the current configuration.
 	trace []*rule.Fact
+
+	// hashCache memoizes Hash() so repeated lookups in HashSet[*Config]
+	// don't re-walk all facts/seen/trace per call. Any mutation must
+	// call invalidateHash().
+	hashCache    uint64
+	hashCacheSet bool
 }
 
 // NewConfig returns a new configuration.
@@ -69,6 +74,7 @@ func (c *Config) DeleteFact(t *rule.Fact) bool {
 	}
 
 	c.facts = slices.Delete(c.facts, i, i+1)
+	c.invalidateHash()
 
 	log.Tracef("removed %s\n", t)
 
@@ -77,6 +83,7 @@ func (c *Config) DeleteFact(t *rule.Fact) bool {
 
 func (c *Config) AddFact(t *rule.Fact) {
 	c.facts = append(c.facts, t)
+	c.invalidateHash()
 }
 
 func (c *Config) Clone() *Config {
@@ -140,6 +147,9 @@ func (c *Config) String() string {
 }
 
 func (c *Config) Hash() uint64 {
+	if c.hashCacheSet {
+		return c.hashCache
+	}
 	h := fnv.New64a()
 
 	for _, f := range c.facts {
@@ -163,11 +173,21 @@ func (c *Config) Hash() uint64 {
 		h.Write(buf[:])
 	}
 
-	return h.Sum64()
+	c.hashCache = h.Sum64()
+	c.hashCacheSet = true
+	return c.hashCache
+}
+
+// invalidateHash clears the memoized Hash. Callers that mutate facts,
+// seen, or trace must call this so the next Hash() recomputes.
+func (c *Config) invalidateHash() {
+	c.hashCache = 0
+	c.hashCacheSet = false
 }
 
 func (c *Config) AddSeen(t term.Term) {
 	c.seen = append(c.seen, t)
+	c.invalidateHash()
 }
 
 func (c *Config) DeleteSeen(t term.Term) bool {
@@ -180,6 +200,7 @@ func (c *Config) DeleteSeen(t term.Term) bool {
 	}
 
 	c.seen = slices.Delete(c.seen, i, i+1)
+	c.invalidateHash()
 
 	return true
 }
