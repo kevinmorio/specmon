@@ -31,7 +31,6 @@ import (
 	"github.com/specmon/specmon/term"
 )
 
-const queueSize = 1
 
 // Config is a configuration of the monitor.
 type Config struct {
@@ -44,8 +43,6 @@ type Config struct {
 
 	// trace is a list of action facts that have been recorded in the current configuration.
 	trace []*rule.Fact
-
-	queue chan []*rule.Fact
 }
 
 // NewConfig returns a new configuration.
@@ -54,7 +51,6 @@ func NewConfig() *Config {
 		facts: []*rule.Fact{},
 		seen:  []term.Term{},
 		trace: []*rule.Fact{},
-		queue: make(chan []*rule.Fact, queueSize),
 	}
 }
 
@@ -88,7 +84,6 @@ func (c *Config) Clone() *Config {
 	d.facts = slices.Clone(c.facts)
 	d.seen = slices.Clone(c.seen)
 	d.trace = slices.Clone(c.trace)
-	// c.queue cannot be cloned
 
 	return d
 }
@@ -191,7 +186,7 @@ func (c *Config) DeleteSeen(t term.Term) bool {
 
 // ApplyRule applies a rule to a configuration and returns the resulting configuration.
 // If ev is a tuple of the form <fn, ret>, then fn is replaced by ret.
-func (c *Config) ApplyRule(r *rule.Rule, b *term.Binding) (*Config, error) {
+func (c *Config) ApplyRule(r *rule.Rule, b *term.Binding) (*Config, []*rule.Fact, error) {
 	log.Infof("   applying rule %s\n", r.Name)
 
 	s := r.Subst(b)
@@ -203,7 +198,7 @@ func (c *Config) ApplyRule(r *rule.Rule, b *term.Binding) (*Config, error) {
 	t = t.ReplaceFormats()
 
 	if !t.IsGround() {
-		return nil, fmt.Errorf("expected ground rule (%s), got variables: %v", t.Name, s.Vars())
+		return nil, nil, fmt.Errorf("expected ground rule (%s), got variables: %v", t.Name, s.Vars())
 	}
 
 	d := c.Clone()
@@ -211,7 +206,7 @@ func (c *Config) ApplyRule(r *rule.Rule, b *term.Binding) (*Config, error) {
 	// Delete the facts from the LHS.
 	for _, f := range t.LHS {
 		if f.IsLinear() && !d.DeleteFact(f) {
-			return nil, fmt.Errorf("cannot delete non-existing fact '%s'", f)
+			return nil, nil, fmt.Errorf("cannot delete non-existing fact '%s'", f)
 		}
 	}
 
@@ -226,7 +221,7 @@ func (c *Config) ApplyRule(r *rule.Rule, b *term.Binding) (*Config, error) {
 	// Triggers in s still contain formats.
 	for _, f := range s.Triggers() {
 		if !d.DeleteSeen(term.ReplaceFormats(f)) {
-			return nil, fmt.Errorf("cannot delete non-existing event '%s'", f)
+			return nil, nil, fmt.Errorf("cannot delete non-existing event '%s'", f)
 		}
 	}
 
@@ -234,18 +229,16 @@ func (c *Config) ApplyRule(r *rule.Rule, b *term.Binding) (*Config, error) {
 	// FIXME: For performance reasons, this is commented out.
 	// d.trace = append(d.trace, t.Act...)
 
-	d.queue <- t.Act
-
 	// Check if special event restrictions are satisfied.
 	if err := restrSatisfied(t.Act); err != nil {
 		// Don't wrap restriction violations to avoid redundant error messages
 		if errors.Is(err, ErrRestrictionViolated) {
-			return nil, err
+			return nil, nil, err
 		}
-		return nil, fmt.Errorf("rule not applied: %w", err)
+		return nil, nil, fmt.Errorf("rule not applied: %w", err)
 	}
 
-	return d, nil
+	return d, t.Act, nil
 }
 
 func splitTupleBinding(a term.Term) *term.Binding {

@@ -154,14 +154,17 @@ type RuleApplication struct {
 	rule    *rule.Rule
 	binding *term.Binding
 	config  *Config
+	actions []*rule.Fact
 }
 
 // ProcessEvent consumes an event and performs the necessary monitoring actions.
-// It returns an error if there was an issue while consuming the event.
-func (m *Monitor) ProcessEvent(a term.Term) error {
+// It returns the action facts produced by each successful rule application
+// (one slice per RuleApplication) and an error if processing failed.
+func (m *Monitor) ProcessEvent(a term.Term) ([][]*rule.Fact, error) {
 	log.Debugf("ProcessEvent(%s)\n", a)
 
 	updated := data.NewHashSet[*Config]()
+	var actions [][]*rule.Fact
 
 	aName := splitPairFirstName(a)
 
@@ -178,7 +181,7 @@ func (m *Monitor) ProcessEvent(a term.Term) error {
 
 			next, err := handleTriggers(c, a, r, m.rules, m.requirements)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			appliedTriggers = appliedTriggers.Union(next)
@@ -196,7 +199,7 @@ func (m *Monitor) ProcessEvent(a term.Term) error {
 
 			next, err := handleHints(c, a, r, m.rules, m.requirements)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			if appliedTriggers.Empty() {
@@ -223,6 +226,9 @@ func (m *Monitor) ProcessEvent(a term.Term) error {
 
 		appliedTriggers.Union(appliedHints).Iterate(func(t RuleApplication) bool {
 			updated.Add(t.config)
+			if len(t.actions) > 0 {
+				actions = append(actions, t.actions)
+			}
 
 			return true
 		})
@@ -241,12 +247,12 @@ func (m *Monitor) ProcessEvent(a term.Term) error {
 			}
 		}
 
-		return ErrNoApplicableRule
+		return nil, ErrNoApplicableRule
 	}
 
 	m.configs = updated
 
-	return nil
+	return actions, nil
 }
 
 // findPossibleEvents returns the events that are possible in each configuration.
@@ -329,7 +335,7 @@ func handleTriggers(c *Config, a term.Term, r *rule.Rule, rules map[string][]*ru
 
 		if triggerBindings.Empty() {
 			log.Infof("rule %s is not applicable: missing triggers", r.Name)
-			C.Add(RuleApplication{r, bt, d})
+			C.Add(RuleApplication{r, bt, d, nil})
 
 			continue
 		}
@@ -337,17 +343,17 @@ func handleTriggers(c *Config, a term.Term, r *rule.Rule, rules map[string][]*ru
 		for _, tb := range triggerBindings.Values() {
 			withTrigger := bt.Extend(tb)
 
-			if d, err := d.ApplyRule(r, withTrigger); err == nil {
+			if d2, acts, err := d.ApplyRule(r, withTrigger); err == nil {
 				log.Infof("rule %s is applicable\n  binding: %s", r.Name, withTrigger)
 
 				// Check for applicable epsilon rules.
 				// At most one may exist.
-				e, err := handleEpsilon(d, rules, requirements)
+				e, err := handleEpsilon(d2, rules, requirements)
 				if err != nil {
 					return nil, err
 				}
 
-				C.Add(RuleApplication{r, withTrigger, e})
+				C.Add(RuleApplication{r, withTrigger, e, acts})
 			} else if errors.Is(err, ErrRestrictionViolated) {
 				log.Infof("rule %s not applicable due to restriction: %v", r.Name, err)
 				continue
@@ -384,7 +390,7 @@ func handleHints(c *Config, a term.Term, r *rule.Rule, rules map[string][]*rule.
 
 		log.Infof("hint rule %s is applicable\n  binding: %s", r.Name, hb)
 
-		d, err := c.ApplyRule(r, hb)
+		d, hintActs, err := c.ApplyRule(r, hb)
 		if err != nil {
 			if errors.Is(err, ErrRestrictionViolated) {
 				log.Infof("hint rule %s not applicable due to restriction: %v", r.Name, err)
@@ -414,7 +420,12 @@ func handleHints(c *Config, a term.Term, r *rule.Rule, rules map[string][]*rule.
 		}
 
 		D.Iterate(func(t RuleApplication) bool {
-			C.Add(RuleApplication{r, hb, t.config})
+			// Concatenate hint actions and downstream trigger actions.
+			actions := hintActs
+			if len(t.actions) > 0 {
+				actions = append(actions, t.actions...)
+			}
+			C.Add(RuleApplication{r, hb, t.config, actions})
 
 			return true
 		})
@@ -435,7 +446,7 @@ func handleEpsilon(c *Config, rules map[string][]*rule.Rule, requirements map[*r
 		for _, b := range conflictSetFacts(c.facts, r.LHS).Values() {
 			log.Infof("epsilon rule %s is applicable\n  binding: %s", r.Name, b)
 
-			d, err := c.ApplyRule(r, b)
+			d, _, err := c.ApplyRule(r, b)
 			if err != nil {
 				return nil, err
 			}
@@ -604,7 +615,8 @@ func (m *Monitor) ProcessEvents(events <-chan *TimedEvent, rewrite bool, pid int
 
 			m.stats.LatenciesReceived = append(m.stats.LatenciesReceived, time.Since(time.Unix(0, event.Time)))
 
-			if err := m.ProcessEvent(event.Event); err != nil {
+			actions, err := m.ProcessEvent(event.Event)
+			if err != nil {
 				log.Warnf("\nfinal configurations (%d)\n", m.configs.Size())
 				for _, c := range m.configs.Values() {
 					for _, f := range c.facts {
@@ -621,17 +633,12 @@ func (m *Monitor) ProcessEvents(events <-chan *TimedEvent, rewrite bool, pid int
 			m.stats.LatenciesProcessed = append(m.stats.LatenciesProcessed, time.Since(time.Unix(0, event.Time)))
 
 			if rewrite {
-				for _, c := range m.configs.Values() {
-					select {
-					case p := <-c.queue:
-						for _, f := range p {
-							if r := getRewriteTerm(f); r != nil {
-								fr := term.Must(term.AsFunction(r))
-								out <- &TimedEvent{Time: event.Time, Event: fr}
-							}
+				for _, group := range actions {
+					for _, f := range group {
+						if r := getRewriteTerm(f); r != nil {
+							fr := term.Must(term.AsFunction(r))
+							out <- &TimedEvent{Time: event.Time, Event: fr}
 						}
-					default:
-						// No output to process
 					}
 				}
 			} else {
