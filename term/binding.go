@@ -197,7 +197,16 @@ func (b *Binding) Clone() *Binding {
 	return &Binding{b.m.Clone()}
 }
 
+// Extend returns a new binding with the keys/values of bp merged onto b.
+// The result must be treated as immutable by callers because the empty-side
+// fast paths alias one of the inputs instead of cloning.
 func (b *Binding) Extend(bp *Binding) *Binding {
+	if bp == nil || bp.m.Empty() {
+		return b
+	}
+	if b == nil || b.m.Empty() {
+		return bp
+	}
 	return &Binding{b.m.Extend(bp.m)}
 }
 
