@@ -36,6 +36,11 @@ type Config struct {
 	// facts is a multiset of facts that are true in the current configuration.
 	facts []*rule.Fact
 
+	// factCounts indexes facts by predicate name so CountByName is O(1)
+	// instead of walking c.facts. Maintained incrementally by AddFact /
+	// DeleteFact / Clone.
+	factCounts map[string]int
+
 	// seen is a multiset of events that have been seen in the current configuration
 	// and that have not been processed yet.
 	seen []term.Term
@@ -53,9 +58,10 @@ type Config struct {
 // NewConfig returns a new configuration.
 func NewConfig() *Config {
 	return &Config{
-		facts: []*rule.Fact{},
-		seen:  []term.Term{},
-		trace: []*rule.Fact{},
+		facts:      []*rule.Fact{},
+		factCounts: make(map[string]int),
+		seen:       []term.Term{},
+		trace:      []*rule.Fact{},
 	}
 }
 
@@ -73,7 +79,13 @@ func (c *Config) DeleteFact(t *rule.Fact) bool {
 		return false
 	}
 
+	removed := c.facts[i]
 	c.facts = slices.Delete(c.facts, i, i+1)
+	if n := c.factCounts[removed.Name]; n <= 1 {
+		delete(c.factCounts, removed.Name)
+	} else {
+		c.factCounts[removed.Name] = n - 1
+	}
 	c.invalidateHash()
 
 	log.Tracef("removed %s\n", t)
@@ -83,6 +95,7 @@ func (c *Config) DeleteFact(t *rule.Fact) bool {
 
 func (c *Config) AddFact(t *rule.Fact) {
 	c.facts = append(c.facts, t)
+	c.factCounts[t.Name]++
 	c.invalidateHash()
 }
 
@@ -91,6 +104,15 @@ func (c *Config) Clone() *Config {
 	d.facts = slices.Clone(c.facts)
 	d.seen = slices.Clone(c.seen)
 	d.trace = slices.Clone(c.trace)
+
+	// Copy the factCounts map so further mutations on the clone don't
+	// disturb the original.
+	if len(c.factCounts) > 0 {
+		d.factCounts = make(map[string]int, len(c.factCounts))
+		for k, v := range c.factCounts {
+			d.factCounts[k] = v
+		}
+	}
 
 	return d
 }
@@ -112,16 +134,10 @@ func (c *Config) FactsAsSliceWithName(name string) []*rule.Fact {
 
 // CountByName returns how many facts in c carry the given predicate name.
 // Used by the rule-applicability gate to skip rules whose LHS requires
-// more instances of a predicate than the config currently has. Linear in
-// the size of c.facts.
+// more instances of a predicate than the config currently has. O(1)
+// via the factCounts index maintained by AddFact / DeleteFact.
 func (c *Config) CountByName(name string) int {
-	n := 0
-	for _, t := range c.facts {
-		if t.Name == name {
-			n++
-		}
-	}
-	return n
+	return c.factCounts[name]
 }
 
 func (c *Config) String() string {
