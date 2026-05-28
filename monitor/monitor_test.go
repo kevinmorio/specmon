@@ -96,6 +96,113 @@ func TestMonitorMultipleFrFacts(t *testing.T) {
 	t.Logf("Processed event successfully, got %d result configs", len(resultConfigs))
 }
 
+// TestMonitorEpsilonActionsForwarded guards the fix for the dropped-
+// epsilon-actions bug: when an epsilon rule fires after a trigger rule
+// and emits a PPEvent action, ProcessEvent's returned action groups
+// must include the epsilon's actions, not just the trigger's.
+//
+// Setup:
+//   - Trigger rule "Go" consumes event <go, ret> and produces State(ret).
+//     Its Act emits PPEvent(triggered(ret)).
+//   - Epsilon rule "Promote" consumes State(x) (no trigger/hint) and
+//     emits Act PPEvent(promoted(x)).
+//
+// On a single ProcessEvent(<go, 42>), both PPEvents must appear in the
+// returned actions. The fix concatenates epsilon's actions onto the
+// trigger's via concatActions; before the fix, handleEpsilon dropped
+// them.
+func TestMonitorEpsilonActionsForwarded(t *testing.T) {
+	goTrigger := &rule.Rule{
+		Name: "Go",
+		LHS:  []*rule.Fact{},
+		RHS: []*rule.Fact{
+			rule.NewFact("State", []term.Term{term.NewVariable("ret")}, rule.LinearFact),
+		},
+		Act: []*rule.Fact{
+			rule.NewFact(monitor.RewriteEventName, []term.Term{
+				term.NewFunction("triggered", []term.Term{term.NewVariable("ret")}),
+			}, rule.LinearFact),
+		},
+		Attrs: map[string]rule.Attribute{
+			"trigger": rule.TermAttribute{
+				Value: []term.Term{
+					term.NewFunction("pair", []term.Term{
+						term.NewFunction("go", []term.Term{}),
+						term.NewVariable("ret"),
+					}),
+				},
+			},
+		},
+	}
+
+	promote := &rule.Rule{
+		Name: "Promote",
+		LHS: []*rule.Fact{
+			rule.NewFact("State", []term.Term{term.NewVariable("x")}, rule.LinearFact),
+		},
+		// No RHS, no trigger, no hint -> epsilon rule.
+		Act: []*rule.Fact{
+			rule.NewFact(monitor.RewriteEventName, []term.Term{
+				term.NewFunction("promoted", []term.Term{term.NewVariable("x")}),
+			}, rule.LinearFact),
+		},
+		// Empty (but non-nil) Attrs so Rule.Subst can populate the
+		// trigger/hint slots without panicking on nil map writes. Real
+		// parsed epsilon rules carry this empty map already.
+		Attrs: map[string]rule.Attribute{},
+	}
+
+	mon, err := monitor.NewMonitor([]*rule.Rule{goTrigger, promote})
+	if err != nil {
+		t.Fatalf("NewMonitor: %v", err)
+	}
+
+	event := term.NewFunction("pair", []term.Term{
+		term.NewFunction("go", []term.Term{}),
+		term.NewConstant("42"),
+	})
+
+	actions, err := mon.ProcessEvent(event)
+	if err != nil {
+		t.Fatalf("ProcessEvent: %v", err)
+	}
+
+	// Flatten into a single slice for inspection. There should be at
+	// least one group, and its contents must include BOTH PPEvents.
+	var flat []*rule.Fact
+	for _, group := range actions {
+		flat = append(flat, group...)
+	}
+
+	if len(flat) < 2 {
+		t.Fatalf("expected at least 2 action facts (trigger + epsilon PPEvents), got %d: %v", len(flat), flat)
+	}
+
+	var sawTriggered, sawPromoted bool
+	for _, f := range flat {
+		if f.Name != monitor.RewriteEventName || len(f.Args) != 1 {
+			continue
+		}
+		fn, err := term.AsFunction(f.Args[0])
+		if err != nil {
+			continue
+		}
+		switch fn.Name {
+		case "triggered":
+			sawTriggered = true
+		case "promoted":
+			sawPromoted = true
+		}
+	}
+
+	if !sawTriggered {
+		t.Errorf("trigger PPEvent(triggered(...)) missing from actions: %v", flat)
+	}
+	if !sawPromoted {
+		t.Errorf("epsilon PPEvent(promoted(...)) missing from actions: %v — Fix 2 regression?", flat)
+	}
+}
+
 // TestMonitorRestrictionViolation tests that when multiple rules can match an event
 // but one fails due to a restriction violation (e.g., Eq check), the monitor continues
 // to try other rules instead of returning an error immediately.
