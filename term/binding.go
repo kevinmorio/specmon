@@ -51,20 +51,30 @@ func NewBindingTrail() *BindingTrail {
 	return &BindingTrail{}
 }
 
+// NewBinding returns an empty binding. The inner HashMap is allocated
+// lazily on the first Set/Remove so that bindings used only for empty
+// reads (Compatible, Equal, Iterate against an empty result) pay only
+// the wrapper allocation.
 func NewBinding() *Binding {
-	return &Binding{
-		m: data.NewHashMap[Term, Term](),
-	}
+	return &Binding{}
 }
 
 func BindingFromMap(m map[Term]Term) *Binding {
+	if len(m) == 0 {
+		return &Binding{}
+	}
 	n := data.NewHashMap[Term, Term]()
-
 	for k, v := range m {
 		n.Set(k, v)
 	}
-
 	return &Binding{n}
+}
+
+// ensureMap lazily allocates the inner HashMap so Set/Remove can operate.
+func (b *Binding) ensureMap() {
+	if b.m == nil {
+		b.m = data.NewHashMap[Term, Term]()
+	}
 }
 
 func (b *Binding) ComputeFixpoint() *Binding {
@@ -163,37 +173,60 @@ func (b *Binding) Hash() uint64 {
 	return h.Sum64()
 }
 
-// Wrapper functions for HashMap.
+// Wrapper functions for HashMap. Each handles a nil inner map for bindings
+// that haven't had Set called on them yet (see NewBinding).
 
 func (b *Binding) Get(k Term) (Term, bool) {
+	if b == nil || b.m == nil {
+		return nil, false
+	}
 	return b.m.Get(k)
 }
 
 func (b *Binding) Set(k, v Term) {
+	b.ensureMap()
 	b.m.Set(k, v)
 }
 
 func (b *Binding) Remove(k Term) {
+	if b == nil || b.m == nil {
+		return
+	}
 	b.m.Remove(k)
 }
 
 func (b *Binding) Empty() bool {
+	if b == nil || b.m == nil {
+		return true
+	}
 	return b.m.Empty()
 }
 
 func (b *Binding) Size() int {
+	if b == nil || b.m == nil {
+		return 0
+	}
 	return b.m.Size()
 }
 
 func (b *Binding) Iterate(f func(Term, Term) bool) {
+	if b == nil || b.m == nil {
+		return
+	}
 	b.m.Iterate(f)
 }
 
 func (b *Binding) IterateSorted(f func(Term, Term) bool) {
+	if b == nil || b.m == nil {
+		return
+	}
 	b.m.IterateSorted(f)
 }
 
 func (b *Binding) Clone() *Binding {
+	if b == nil || b.m == nil {
+		return &Binding{}
+	}
 	return &Binding{b.m.Clone()}
 }
 
@@ -201,10 +234,10 @@ func (b *Binding) Clone() *Binding {
 // The result must be treated as immutable by callers because the empty-side
 // fast paths alias one of the inputs instead of cloning.
 func (b *Binding) Extend(bp *Binding) *Binding {
-	if bp == nil || bp.m.Empty() {
+	if bp.Empty() {
 		return b
 	}
-	if b == nil || b.m.Empty() {
+	if b.Empty() {
 		return bp
 	}
 	return &Binding{b.m.Extend(bp.m)}
