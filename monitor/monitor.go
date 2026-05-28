@@ -65,11 +65,50 @@ type Monitor struct {
 	// It is indexed by the rules' hints and triggers.
 	rules map[string][]*rule.Rule
 
+	// requirements maps each rule to the per-predicate name -> count its
+	// LHS demands. The rule-applicability gate consults this to short-
+	// circuit conflictSetFacts when a config can't possibly satisfy the
+	// rule's LHS.
+	requirements map[*rule.Rule]map[string]int
+
 	// configs is the set of configurations that the monitor has.
 	configs *data.HashSet[*Config]
 
 	// stats includes the statistics of the monitor.
 	stats *Stats
+}
+
+// computeRequirements returns the per-predicate-name count of facts the
+// rule's LHS demands. A rule whose LHS asks for two instances of
+// State() and one of Out() has needCount{"State": 2, "Out": 1}.
+func computeRequirements(lhs []*rule.Fact) map[string]int {
+	if len(lhs) == 0 {
+		return nil
+	}
+	needCount := make(map[string]int, len(lhs))
+	for _, f := range lhs {
+		if f == nil {
+			continue
+		}
+		needCount[f.Name]++
+	}
+	return needCount
+}
+
+// canMatchLHS reports whether c could possibly satisfy r's LHS. False
+// means the conflictSetFacts call for (c, r) can be skipped entirely.
+// True is necessary but not sufficient: the binding/unification work
+// happens later.
+func canMatchLHS(c *Config, needCount map[string]int) bool {
+	if len(needCount) == 0 {
+		return true
+	}
+	for name, need := range needCount {
+		if c.CountByName(name) < need {
+			return false
+		}
+	}
+	return true
 }
 
 func NewMonitor(rules []*rule.Rule) (*Monitor, error) {
@@ -78,7 +117,10 @@ func NewMonitor(rules []*rule.Rule) (*Monitor, error) {
 	}
 
 	rulesMap := make(map[string][]*rule.Rule)
+	requirements := make(map[*rule.Rule]map[string]int, len(rules))
 	for _, r := range rules {
+		requirements[r] = computeRequirements(r.LHS)
+
 		if !r.HasHints() && !r.HasTriggers() {
 			rulesMap[""] = append(rulesMap[""], r)
 
@@ -91,9 +133,10 @@ func NewMonitor(rules []*rule.Rule) (*Monitor, error) {
 	}
 
 	return &Monitor{
-		rules:   rulesMap,
-		configs: data.NewHashSet(NewConfig()),
-		stats:   &Stats{},
+		rules:        rulesMap,
+		requirements: requirements,
+		configs:      data.NewHashSet(NewConfig()),
+		stats:        &Stats{},
 	}, nil
 }
 
@@ -129,8 +172,11 @@ func (m *Monitor) ProcessEvent(a term.Term) error {
 			if !r.HasTriggers() {
 				continue
 			}
+			if !canMatchLHS(c, m.requirements[r]) {
+				continue
+			}
 
-			next, err := handleTriggers(c, a, r, m.rules)
+			next, err := handleTriggers(c, a, r, m.rules, m.requirements)
 			if err != nil {
 				return err
 			}
@@ -144,8 +190,11 @@ func (m *Monitor) ProcessEvent(a term.Term) error {
 			if !r.HasHints() {
 				continue
 			}
+			if !canMatchLHS(c, m.requirements[r]) {
+				continue
+			}
 
-			next, err := handleHints(c, a, r, m.rules)
+			next, err := handleHints(c, a, r, m.rules, m.requirements)
 			if err != nil {
 				return err
 			}
@@ -253,10 +302,13 @@ func getUniqueBinding(matches []term.Term, target term.Term) (*term.Binding, err
 	return unique, nil
 }
 
-func handleTriggers(c *Config, a term.Term, r *rule.Rule, rules map[string][]*rule.Rule) (*data.HashSet[RuleApplication], error) {
+func handleTriggers(c *Config, a term.Term, r *rule.Rule, rules map[string][]*rule.Rule, requirements map[*rule.Rule]map[string]int) (*data.HashSet[RuleApplication], error) {
 	log.Tracef("handleTriggers(%s, %s, %s)\n\n", c, a, r.Name)
 
 	C := data.NewHashSet[RuleApplication]()
+	if !canMatchLHS(c, requirements[r]) {
+		return C, nil
+	}
 	for _, b := range conflictSetFacts(c.facts, r.LHS).Values() {
 		// Instantiate the triggers with the found binding.
 		// This ensures
@@ -290,7 +342,7 @@ func handleTriggers(c *Config, a term.Term, r *rule.Rule, rules map[string][]*ru
 
 				// Check for applicable epsilon rules.
 				// At most one may exist.
-				e, err := handleEpsilon(d, rules)
+				e, err := handleEpsilon(d, rules, requirements)
 				if err != nil {
 					return nil, err
 				}
@@ -308,12 +360,15 @@ func handleTriggers(c *Config, a term.Term, r *rule.Rule, rules map[string][]*ru
 	return C, nil
 }
 
-func handleHints(c *Config, a term.Term, r *rule.Rule, rules map[string][]*rule.Rule) (*data.HashSet[RuleApplication], error) {
+func handleHints(c *Config, a term.Term, r *rule.Rule, rules map[string][]*rule.Rule, requirements map[*rule.Rule]map[string]int) (*data.HashSet[RuleApplication], error) {
 	log.Tracef("handleHints(%s, %s, %s)\n\n", c, a, r.Name)
 
 	aName := splitPairFirstName(a)
 
 	C := data.NewHashSet[RuleApplication]()
+	if !canMatchLHS(c, requirements[r]) {
+		return C, nil
+	}
 	for _, b := range conflictSetFacts(c.facts, r.LHS).Values() {
 		// Instantiate the hints with the found binding.
 		// This ensures
@@ -347,7 +402,7 @@ func handleHints(c *Config, a term.Term, r *rule.Rule, rules map[string][]*rule.
 			if !rr.HasTriggers() {
 				continue
 			}
-			next, err := handleTriggers(d, g, rr, rules)
+			next, err := handleTriggers(d, g, rr, rules, requirements)
 			if err != nil {
 				return nil, err
 			}
@@ -369,11 +424,14 @@ func handleHints(c *Config, a term.Term, r *rule.Rule, rules map[string][]*rule.
 }
 
 // handleEpsilon handles rules without triggers or hints.
-func handleEpsilon(c *Config, rules map[string][]*rule.Rule) (*Config, error) {
+func handleEpsilon(c *Config, rules map[string][]*rule.Rule, requirements map[*rule.Rule]map[string]int) (*Config, error) {
 	log.Infof("\n\nhandleEpsilon()\n")
 	var C []*Config
 
 	for _, r := range rules[""] {
+		if !canMatchLHS(c, requirements[r]) {
+			continue
+		}
 		for _, b := range conflictSetFacts(c.facts, r.LHS).Values() {
 			log.Infof("epsilon rule %s is applicable\n  binding: %s", r.Name, b)
 

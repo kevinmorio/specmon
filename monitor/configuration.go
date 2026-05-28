@@ -108,6 +108,20 @@ func (c *Config) FactsAsSliceWithName(name string) []*rule.Fact {
 	return T
 }
 
+// CountByName returns how many facts in c carry the given predicate name.
+// Used by the rule-applicability gate to skip rules whose LHS requires
+// more instances of a predicate than the config currently has. Linear in
+// the size of c.facts.
+func (c *Config) CountByName(name string) int {
+	n := 0
+	for _, t := range c.facts {
+		if t.Name == name {
+			n++
+		}
+	}
+	return n
+}
+
 func (c *Config) String() string {
 	facts := make([]string, len(c.facts))
 	for i := range c.facts {
