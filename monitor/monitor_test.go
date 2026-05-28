@@ -19,6 +19,7 @@
 package monitor_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/specmon/specmon/monitor"
@@ -233,4 +234,104 @@ func TestMonitorRestrictionViolation(t *testing.T) {
 	}
 
 	t.Logf("Test passed: Rule A succeeded, Rule B failed due to restriction violation")
+}
+
+// TestMonitorTriggerAnchoredToCurrentEvent pins the trigger-anchoring
+// semantics: every rule application performed while processing event a
+// must consume an instance of a itself. A buffered seen-event may only
+// fill the REMAINING trigger slots of a multi-trigger rule; it can
+// never supply the binding for the slot the current event matched.
+//
+// Scenario: R1 buffers go-events (its done-trigger never arrives). R2
+// consumes Gate() on <go, x>, where x occurs only in the trigger. The
+// trace buffers <go,'1'> while R2 is inapplicable (no Gate), creates
+// Gate(), then sends <go,'2'>.
+//
+// Exactly two configurations must result:
+//
+//	{ [Gate()]     | seen: <go,'1'>, <go,'2'> }  (R1 buffered <go,'2'>)
+//	{ [State('2')] | seen: <go,'1'> }            (R2 fired on <go,'2'>)
+//
+// A configuration containing State('1') -- R2 fired by binding x from
+// the buffered <go,'1'> instead of the arriving event -- is invalid
+// and must be unreachable. (Matching the trigger patterns against the
+// seen set with the event binding left open reintroduces it.)
+func TestMonitorTriggerAnchoredToCurrentEvent(t *testing.T) {
+	pairEv := func(name string, arg term.Term) *term.Function {
+		return term.NewFunction("pair", []term.Term{
+			term.NewFunction(name, []term.Term{}), arg,
+		})
+	}
+
+	r1 := &rule.Rule{
+		Name: "R1", LHS: []*rule.Fact{}, RHS: []*rule.Fact{},
+		Attrs: map[string]rule.Attribute{
+			"trigger": rule.TermAttribute{Value: []term.Term{
+				pairEv("go", term.NewVariable("y")),
+				pairEv("done", term.NewVariable("y")),
+			}},
+		},
+	}
+	r2 := &rule.Rule{
+		Name: "R2",
+		LHS:  []*rule.Fact{rule.NewFact("Gate", []term.Term{}, rule.LinearFact)},
+		RHS:  []*rule.Fact{rule.NewFact("State", []term.Term{term.NewVariable("x")}, rule.LinearFact)},
+		Attrs: map[string]rule.Attribute{
+			"trigger": rule.TermAttribute{Value: []term.Term{
+				pairEv("go", term.NewVariable("x")),
+			}},
+		},
+	}
+	r3 := &rule.Rule{
+		Name: "R3", LHS: []*rule.Fact{},
+		RHS: []*rule.Fact{rule.NewFact("Gate", []term.Term{}, rule.LinearFact)},
+		Attrs: map[string]rule.Attribute{
+			"trigger": rule.TermAttribute{Value: []term.Term{
+				pairEv("mk", term.NewVariable("z")),
+			}},
+		},
+	}
+
+	mon, err := monitor.NewMonitor([]*rule.Rule{r1, r2, r3})
+	if err != nil {
+		t.Fatalf("NewMonitor: %v", err)
+	}
+	step := func(name, val string) {
+		if _, err := mon.ProcessEvent(pairEv(name, term.NewConstant(val))); err != nil {
+			t.Fatalf("ProcessEvent(%s,%s): %v", name, val, err)
+		}
+	}
+
+	step("go", "1")
+	step("mk", "0")
+	step("go", "2")
+
+	configs := mon.Configs()
+	if len(configs) != 2 {
+		for i, c := range configs {
+			t.Logf("config %d: %s", i, c)
+		}
+		t.Fatalf("expected exactly 2 configurations, got %d", len(configs))
+	}
+
+	var sawFired, sawBuffered bool
+	for _, c := range configs {
+		s := c.String()
+		if strings.Contains(s, "State('1')") {
+			t.Errorf("invalid configuration reached: R2 bound its trigger from the buffered <go,'1'>: %s", s)
+		}
+		switch {
+		case strings.Contains(s, "State('2')") && strings.Contains(s, "<go(), '1'>"):
+			sawFired = true
+		case strings.Contains(s, "Gate()") &&
+			strings.Contains(s, "<go(), '1'>") && strings.Contains(s, "<go(), '2'>"):
+			sawBuffered = true
+		}
+	}
+	if !sawFired {
+		t.Errorf("missing configuration { [State('2')] | seen: <go,'1'> }")
+	}
+	if !sawBuffered {
+		t.Errorf("missing configuration { [Gate()] | seen: <go,'1'>, <go,'2'> }")
+	}
 }

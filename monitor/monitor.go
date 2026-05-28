@@ -315,18 +315,41 @@ func handleTriggers(c *Config, a term.Term, r *rule.Rule, rules map[string][]*ru
 	if !canMatchLHS(c, requirements[r]) {
 		return C, nil
 	}
-	for _, b := range conflictSetFacts(c.facts, r.LHS).Values() {
-		// Instantiate the triggers with the found binding.
-		// This ensures
-		//   1. The binding found is compatible with b.
-		//   2. The triggers can be evaluated and the functions they contain be evaluated.
-		instTriggers := term.Terms(r.Triggers()).Subst(b)
 
-		u, err := getUniqueBinding(instTriggers, a)
-		if err != nil {
-			continue
+	rawTriggers := r.Triggers()
+
+	// Try to extract a trigger binding from the event first. When this
+	// succeeds, shared variables narrow the LHS fact search from O(N)
+	// to O(1). Falls back to the original O(N) approach when the raw
+	// trigger contains format expressions with functions of unbound
+	// variables that cannot be evaluated without LHS-derived bindings.
+	triggerBinding, triggerErr := getUniqueBinding(rawTriggers, a)
+
+	var lhsPatterns []*rule.Fact
+	if triggerErr == nil {
+		lhsPatterns = make([]*rule.Fact, len(r.LHS))
+		for i, f := range r.LHS {
+			lhsPatterns[i] = f.Subst(triggerBinding)
 		}
-		bt := b.Extend(u)
+	} else {
+		lhsPatterns = r.LHS
+	}
+
+	for _, b := range conflictSetFacts(c.facts, lhsPatterns).Values() {
+		var bt *term.Binding
+		if triggerErr == nil {
+			bt = triggerBinding.Extend(b)
+		} else {
+			// Fallback: match trigger instantiated with LHS binding.
+			instTriggers := term.Terms(rawTriggers).Subst(b)
+			u, err := getUniqueBinding(instTriggers, a)
+			if err != nil {
+				continue
+			}
+			bt = b.Extend(u)
+		}
+
+		instTriggers := term.Terms(rawTriggers).Subst(bt)
 
 		d := c.Clone()
 		d.AddSeen(a.Subst(bt))
@@ -375,18 +398,36 @@ func handleHints(c *Config, a term.Term, r *rule.Rule, rules map[string][]*rule.
 	if !canMatchLHS(c, requirements[r]) {
 		return C, nil
 	}
-	for _, b := range conflictSetFacts(c.facts, r.LHS).Values() {
-		// Instantiate the hints with the found binding.
-		// This ensures
-		//   1. The binding found is compatible with b.
-		//   2. The hints can be evaluated and the functions they contain be evaluated.
-		instHints := term.Terms(r.Hints()).Subst(b)
 
-		u, err := getUniqueBinding(instHints, a)
-		if err != nil {
-			continue
+	rawHints := r.Hints()
+
+	// Mirror handleTriggers: extract hint binding from the event first
+	// to narrow the LHS fact search; fall back to the original O(N)
+	// approach when hint evaluation requires LHS-derived bindings.
+	hintBinding, hintErr := getUniqueBinding(rawHints, a)
+
+	var lhsPatterns []*rule.Fact
+	if hintErr == nil {
+		lhsPatterns = make([]*rule.Fact, len(r.LHS))
+		for i, f := range r.LHS {
+			lhsPatterns[i] = f.Subst(hintBinding)
 		}
-		hb := b.Extend(u)
+	} else {
+		lhsPatterns = r.LHS
+	}
+
+	for _, b := range conflictSetFacts(c.facts, lhsPatterns).Values() {
+		var hb *term.Binding
+		if hintErr == nil {
+			hb = hintBinding.Extend(b)
+		} else {
+			instHints := term.Terms(rawHints).Subst(b)
+			u, err := getUniqueBinding(instHints, a)
+			if err != nil {
+				continue
+			}
+			hb = b.Extend(u)
+		}
 
 		log.Infof("hint rule %s is applicable\n  binding: %s", r.Name, hb)
 
