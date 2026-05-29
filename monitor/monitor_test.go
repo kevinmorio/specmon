@@ -27,6 +27,306 @@ import (
 	"github.com/specmon/specmon/term"
 )
 
+// TestMonitorHintTriggerActionsBothSurvive is Codex's regression test
+// for the hint-trigger dedup bug. handleHints wraps each downstream
+// trigger's outcome as RuleApplication{hint_rule, hint_binding,
+// trigger_config, hint_actions + trigger_actions}. If two downstream
+// triggers (T1, T2) both match the same event with the same binding
+// and land on the same final config, the three identity fields are
+// identical and only the action payload differs.
+//
+// On the pre-fix code (RuleApplication.Hash excluded actions) the two
+// applications collapsed in HashSet[RuleApplication] and ProcessEvent
+// emitted only one set of actions. The fix folds ordered actions into
+// the hash so both applications survive.
+func TestMonitorHintTriggerActionsBothSurvive(t *testing.T) {
+	// Hint H: matches event <go, x>. Consumes Init(), produces State(x),
+	// emits PPEvent(hintOut(x)). The Init() fact gets installed by an
+	// initial trigger event (see below).
+	hintRule := &rule.Rule{
+		Name: "H",
+		LHS: []*rule.Fact{
+			rule.NewFact("Init", []term.Term{}, rule.LinearFact),
+		},
+		RHS: []*rule.Fact{
+			rule.NewFact("State", []term.Term{term.NewVariable("x")}, rule.LinearFact),
+		},
+		Act: []*rule.Fact{
+			rule.NewFact(monitor.RewriteEventName, []term.Term{
+				term.NewFunction("hintOut", []term.Term{term.NewVariable("x")}),
+			}, rule.LinearFact),
+		},
+		Attrs: map[string]rule.Attribute{
+			"hint": rule.TermAttribute{
+				Value: []term.Term{
+					term.NewFunction("pair", []term.Term{
+						term.NewFunction("go", []term.Term{}),
+						term.NewVariable("x"),
+					}),
+				},
+			},
+		},
+	}
+
+	// Setup rule that installs Init() in response to <setup, ()>.
+	setupRule := &rule.Rule{
+		Name: "Setup",
+		LHS:  []*rule.Fact{},
+		RHS: []*rule.Fact{
+			rule.NewFact("Init", []term.Term{}, rule.LinearFact),
+		},
+		Attrs: map[string]rule.Attribute{
+			"trigger": rule.TermAttribute{
+				Value: []term.Term{
+					term.NewFunction("pair", []term.Term{
+						term.NewFunction("setup", []term.Term{}),
+						term.NewFunction("pair", []term.Term{}),
+					}),
+				},
+			},
+		},
+	}
+
+	// Trigger T1: matches event <go, x>. LHS State(x), produces nothing, emits PPEvent(t1(x)).
+	t1Rule := &rule.Rule{
+		Name: "T1",
+		LHS: []*rule.Fact{
+			rule.NewFact("State", []term.Term{term.NewVariable("x")}, rule.LinearFact),
+		},
+		RHS: []*rule.Fact{},
+		Act: []*rule.Fact{
+			rule.NewFact(monitor.RewriteEventName, []term.Term{
+				term.NewFunction("t1", []term.Term{term.NewVariable("x")}),
+			}, rule.LinearFact),
+		},
+		Attrs: map[string]rule.Attribute{
+			"trigger": rule.TermAttribute{
+				Value: []term.Term{
+					term.NewFunction("pair", []term.Term{
+						term.NewFunction("go", []term.Term{}),
+						term.NewVariable("x"),
+					}),
+				},
+			},
+		},
+	}
+
+	// Trigger T2: same shape as T1, different action.
+	t2Rule := &rule.Rule{
+		Name: "T2",
+		LHS: []*rule.Fact{
+			rule.NewFact("State", []term.Term{term.NewVariable("x")}, rule.LinearFact),
+		},
+		RHS: []*rule.Fact{},
+		Act: []*rule.Fact{
+			rule.NewFact(monitor.RewriteEventName, []term.Term{
+				term.NewFunction("t2", []term.Term{term.NewVariable("x")}),
+			}, rule.LinearFact),
+		},
+		Attrs: map[string]rule.Attribute{
+			"trigger": rule.TermAttribute{
+				Value: []term.Term{
+					term.NewFunction("pair", []term.Term{
+						term.NewFunction("go", []term.Term{}),
+						term.NewVariable("x"),
+					}),
+				},
+			},
+		},
+	}
+
+	mon, err := monitor.NewMonitor([]*rule.Rule{setupRule, hintRule, t1Rule, t2Rule})
+	if err != nil {
+		t.Fatalf("NewMonitor: %v", err)
+	}
+
+	// Setup event to install Init().
+	setupEvent := term.NewFunction("pair", []term.Term{
+		term.NewFunction("setup", []term.Term{}),
+		term.NewFunction("pair", []term.Term{}),
+	})
+	if _, err := mon.ProcessEvent(setupEvent); err != nil {
+		t.Fatalf("ProcessEvent(setup): %v", err)
+	}
+
+	// The hint-trigger event.
+	event := term.NewFunction("pair", []term.Term{
+		term.NewFunction("go", []term.Term{}),
+		term.NewConstant("42"),
+	})
+
+	actions, err := mon.ProcessEvent(event)
+	if err != nil {
+		t.Fatalf("ProcessEvent: %v", err)
+	}
+
+	// Flatten the per-application action groups for inspection.
+	var flat []*rule.Fact
+	for _, group := range actions {
+		flat = append(flat, group...)
+	}
+
+	// We expect the rewrite output to include BOTH t1 and t2 PPEvents.
+	// The hint's PPEvent appears once per path (twice total) since it
+	// is prepended into each downstream application's action list.
+	var sawT1, sawT2 bool
+	hintCount := 0
+	for _, f := range flat {
+		if f.Name != monitor.RewriteEventName || len(f.Args) != 1 {
+			continue
+		}
+		fn, err := term.AsFunction(f.Args[0])
+		if err != nil {
+			continue
+		}
+		switch fn.Name {
+		case "t1":
+			sawT1 = true
+		case "t2":
+			sawT2 = true
+		case "hintOut":
+			hintCount++
+		}
+	}
+
+	if !sawT1 {
+		t.Errorf("t1 PPEvent missing from rewrite output: %v", flat)
+	}
+	if !sawT2 {
+		t.Errorf("t2 PPEvent missing from rewrite output: %v — RuleApplication.Hash collapsed distinct-action applications?", flat)
+	}
+	if hintCount < 2 {
+		t.Errorf("hintOut PPEvent should appear once per downstream trigger (2 total), got %d", hintCount)
+	}
+}
+
+// TestMonitorHintTriggerEmptyActionsBothSurvive is the round-3
+// follow-on to TestMonitorHintTriggerActionsBothSurvive. The earlier
+// test had T1 and T2 emitting DIFFERENT actions, which the
+// action-folded hash could distinguish. This test sets T1 and T2 with
+// EMPTY Act lists landing on the same final config: with action-in-
+// hash the wrapped hint applications carry identical hash inputs and
+// HashSet[RuleApplication] would collapse them. The slice-based
+// collection ([]RuleApplication) cannot collapse them because there
+// is no dedup; the hint action must appear once per downstream
+// trigger path.
+func TestMonitorHintTriggerEmptyActionsBothSurvive(t *testing.T) {
+	hintRule := &rule.Rule{
+		Name: "H",
+		LHS: []*rule.Fact{
+			rule.NewFact("Init", []term.Term{}, rule.LinearFact),
+		},
+		RHS: []*rule.Fact{
+			rule.NewFact("State", []term.Term{term.NewVariable("x")}, rule.LinearFact),
+		},
+		Act: []*rule.Fact{
+			rule.NewFact(monitor.RewriteEventName, []term.Term{
+				term.NewFunction("hintOut", []term.Term{term.NewVariable("x")}),
+			}, rule.LinearFact),
+		},
+		Attrs: map[string]rule.Attribute{
+			"hint": rule.TermAttribute{
+				Value: []term.Term{
+					term.NewFunction("pair", []term.Term{
+						term.NewFunction("go", []term.Term{}),
+						term.NewVariable("x"),
+					}),
+				},
+			},
+		},
+	}
+
+	setupRule := &rule.Rule{
+		Name: "Setup",
+		LHS:  []*rule.Fact{},
+		RHS: []*rule.Fact{
+			rule.NewFact("Init", []term.Term{}, rule.LinearFact),
+		},
+		Attrs: map[string]rule.Attribute{
+			"trigger": rule.TermAttribute{
+				Value: []term.Term{
+					term.NewFunction("pair", []term.Term{
+						term.NewFunction("setup", []term.Term{}),
+						term.NewFunction("pair", []term.Term{}),
+					}),
+				},
+			},
+		},
+	}
+
+	// T1 and T2 both consume State(x), produce nothing, emit NO Acts.
+	// Identical externally-visible result (same final config, same
+	// action list) but distinct rule pointers.
+	makeTrigger := func(name string) *rule.Rule {
+		return &rule.Rule{
+			Name: name,
+			LHS: []*rule.Fact{
+				rule.NewFact("State", []term.Term{term.NewVariable("x")}, rule.LinearFact),
+			},
+			RHS: []*rule.Fact{},
+			Act: nil,
+			Attrs: map[string]rule.Attribute{
+				"trigger": rule.TermAttribute{
+					Value: []term.Term{
+						term.NewFunction("pair", []term.Term{
+							term.NewFunction("go", []term.Term{}),
+							term.NewVariable("x"),
+						}),
+					},
+				},
+			},
+		}
+	}
+	t1Rule := makeTrigger("T1")
+	t2Rule := makeTrigger("T2")
+
+	mon, err := monitor.NewMonitor([]*rule.Rule{setupRule, hintRule, t1Rule, t2Rule})
+	if err != nil {
+		t.Fatalf("NewMonitor: %v", err)
+	}
+
+	setupEvent := term.NewFunction("pair", []term.Term{
+		term.NewFunction("setup", []term.Term{}),
+		term.NewFunction("pair", []term.Term{}),
+	})
+	if _, err := mon.ProcessEvent(setupEvent); err != nil {
+		t.Fatalf("ProcessEvent(setup): %v", err)
+	}
+
+	event := term.NewFunction("pair", []term.Term{
+		term.NewFunction("go", []term.Term{}),
+		term.NewConstant("42"),
+	})
+
+	actions, err := mon.ProcessEvent(event)
+	if err != nil {
+		t.Fatalf("ProcessEvent: %v", err)
+	}
+
+	// Count hintOut PPEvents in the flattened action stream.
+	hintCount := 0
+	for _, group := range actions {
+		for _, f := range group {
+			if f.Name != monitor.RewriteEventName || len(f.Args) != 1 {
+				continue
+			}
+			fn, err := term.AsFunction(f.Args[0])
+			if err != nil {
+				continue
+			}
+			if fn.Name == "hintOut" {
+				hintCount++
+			}
+		}
+	}
+
+	if hintCount != 2 {
+		t.Errorf("hintOut PPEvent should appear once per downstream trigger path "+
+			"(2 expected even with empty trigger Acts and identical final configs), got %d. "+
+			"Did RuleApplication dedup collapse distinct hint-trigger paths?", hintCount)
+	}
+}
+
 // TestMonitorMultipleFrFacts tests a bug in conflictSet with a
 // rule with two Fr facts, and we test the internal rule matching logic.
 func TestMonitorMultipleFrFacts(t *testing.T) {

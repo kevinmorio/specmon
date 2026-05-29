@@ -185,6 +185,22 @@ func (m *Monitor) Stats() *Stats {
 	return m.stats
 }
 
+// RuleApplication records one rule firing during a ProcessEvent call:
+// the rule that ran, the binding that produced it, the resulting
+// configuration, and the action facts emitted (forwarded to the
+// rewrite output when the monitor runs in rewrite mode).
+//
+// RuleApplication has no Hash or Equal method by design. It is
+// collected into plain []RuleApplication slices throughout the
+// monitor; structural deduplication happens later at the *Config
+// boundary (HashSet[*Config]) where it has well-defined meaning.
+// Trying to dedup at the RuleApplication level proved fragile in
+// review: every observable difference between two applications
+// (rule pointer, binding, resulting config, action list) would need
+// to be folded into a 64-bit hash with no collision fallback, and
+// each round of review found another field that needed inclusion.
+// Treating applications as a sequence instead of a set sidesteps
+// the entire identity-encoding problem.
 type RuleApplication struct {
 	rule    *rule.Rule
 	binding *term.Binding
@@ -204,7 +220,7 @@ func (m *Monitor) ProcessEvent(a term.Term) ([][]*rule.Fact, error) {
 	aKey := ruleKeyForTerm(a)
 
 	for _, c := range m.configs.Values() {
-		appliedTriggers := data.NewHashSet[RuleApplication]()
+		var appliedTriggers []RuleApplication
 
 		for _, r := range m.triggerRules[aKey] {
 			if !canMatchLHS(c, m.requirements[r]) {
@@ -216,10 +232,10 @@ func (m *Monitor) ProcessEvent(a term.Term) ([][]*rule.Fact, error) {
 				return nil, err
 			}
 
-			appliedTriggers = appliedTriggers.Union(next)
+			appliedTriggers = append(appliedTriggers, next...)
 		}
 
-		appliedHints := data.NewHashSet[RuleApplication]()
+		var appliedHints []RuleApplication
 
 		for _, r := range m.hintRules[aKey] {
 			if !canMatchLHS(c, m.requirements[r]) {
@@ -231,36 +247,53 @@ func (m *Monitor) ProcessEvent(a term.Term) ([][]*rule.Fact, error) {
 				return nil, err
 			}
 
-			if appliedTriggers.Empty() {
-				appliedHints = appliedHints.Union(next)
+			if len(appliedTriggers) == 0 {
+				appliedHints = append(appliedHints, next...)
 
 				continue
 			}
 
-			appliedTriggers.Iterate(func(t RuleApplication) bool {
-				next.Iterate(func(h RuleApplication) bool {
-					// If r is not a start rule of an applicable trigger
-					// or the binding of the hint rule is different from the trigger rule,
-					// then add the configuration.
+			// Replicate the original HashSet-based filter as a slice
+			// append with semantically-equivalent dedup.
+			//
+			// Original semantics: for each (t, h) pair add h iff
+			// NOT(r is a start-rule of t.rule AND t.binding == h.binding).
+			// With HashSet, repeated Adds of the same h collapsed; a
+			// single h was kept iff AT LEAST ONE t in appliedTriggers
+			// passed the predicate.
+			//
+			// Equivalently: h is suppressed iff FOR ALL t,
+			//   IsStartRuleOf(r, t.rule) AND t.binding.Equal(h.binding).
+			// We keep h otherwise. Each surviving h is appended once.
+			for _, h := range next {
+				suppress := true
+				for _, t := range appliedTriggers {
 					if !rule.IsStartRuleOf(r, t.rule) || !t.binding.Equal(h.binding) {
-						appliedHints.Add(h)
+						suppress = false
+						break
 					}
-
-					return true
-				})
-
-				return true
-			})
+				}
+				if !suppress {
+					appliedHints = append(appliedHints, h)
+				}
+			}
 		}
 
-		appliedTriggers.Union(appliedHints).Iterate(func(t RuleApplication) bool {
+		// Concatenated walk over the per-event applications. updated.Add
+		// dedups *Config structurally; actions are forwarded in order
+		// as the rewrite consumer expects.
+		for _, t := range appliedTriggers {
 			updated.Add(t.config)
 			if len(t.actions) > 0 {
 				actions = append(actions, t.actions)
 			}
-
-			return true
-		})
+		}
+		for _, t := range appliedHints {
+			updated.Add(t.config)
+			if len(t.actions) > 0 {
+				actions = append(actions, t.actions)
+			}
+		}
 	}
 
 	if updated.Size() > 1 {
@@ -365,13 +398,13 @@ func getUniqueBinding(matches []term.Term, target term.Term) (*term.Binding, err
 	return unique, nil
 }
 
-func (m *Monitor) handleTriggers(c *Config, a term.Term, r *rule.Rule) (*data.HashSet[RuleApplication], error) {
+func (m *Monitor) handleTriggers(c *Config, a term.Term, r *rule.Rule) ([]RuleApplication, error) {
 	log.Tracef("handleTriggers(%s, %s, %s)\n\n", c, a, r.Name)
 
-	C := data.NewHashSet[RuleApplication]()
 	if !canMatchLHS(c, m.requirements[r]) {
-		return C, nil
+		return nil, nil
 	}
+	var C []RuleApplication
 
 	rawTriggers := r.Triggers()
 
@@ -415,7 +448,7 @@ func (m *Monitor) handleTriggers(c *Config, a term.Term, r *rule.Rule) (*data.Ha
 
 		if triggerBindings.Empty() {
 			log.Infof("rule %s is not applicable: missing triggers", r.Name)
-			C.Add(RuleApplication{r, bt, d, nil})
+			C = append(C, RuleApplication{rule: r, binding: bt, config: d, actions: nil})
 
 			continue
 		}
@@ -435,7 +468,7 @@ func (m *Monitor) handleTriggers(c *Config, a term.Term, r *rule.Rule) (*data.Ha
 					return nil, err
 				}
 
-				C.Add(RuleApplication{r, withTrigger, e, concatActions(acts, epsActs)})
+				C = append(C, RuleApplication{rule: r, binding: withTrigger, config: e, actions: concatActions(acts, epsActs)})
 			} else if errors.Is(err, ErrRestrictionViolated) {
 				log.Infof("rule %s not applicable due to restriction: %v", r.Name, err)
 				continue
@@ -448,13 +481,13 @@ func (m *Monitor) handleTriggers(c *Config, a term.Term, r *rule.Rule) (*data.Ha
 	return C, nil
 }
 
-func (m *Monitor) handleHints(c *Config, a term.Term, r *rule.Rule) (*data.HashSet[RuleApplication], error) {
+func (m *Monitor) handleHints(c *Config, a term.Term, r *rule.Rule) ([]RuleApplication, error) {
 	log.Tracef("handleHints(%s, %s, %s)\n\n", c, a, r.Name)
 
-	C := data.NewHashSet[RuleApplication]()
 	if !canMatchLHS(c, m.requirements[r]) {
-		return C, nil
+		return nil, nil
 	}
+	var C []RuleApplication
 
 	rawHints := r.Hints()
 
@@ -501,28 +534,26 @@ func (m *Monitor) handleHints(c *Config, a term.Term, r *rule.Rule) (*data.HashS
 		g := a.Subst(hb)
 		gKey := ruleKeyForTerm(g)
 
-		D := data.NewHashSet[RuleApplication]()
+		var D []RuleApplication
 		for _, rr := range m.triggerRules[gKey] {
 			next, err := m.handleTriggers(d, g, rr)
 			if err != nil {
 				return nil, err
 			}
-			D = D.Union(next)
+			D = append(D, next...)
 		}
 
-		if D.Size() == 0 {
+		if len(D) == 0 {
 			return nil, fmt.Errorf("no applicable rule found after accepting hint %s", g)
 		}
 
-		D.Iterate(func(t RuleApplication) bool {
+		for _, t := range D {
 			// Concatenate hint actions and downstream trigger actions.
 			// concatActions allocates only when both sides are non-empty,
 			// so the common single-source case stays alloc-free and we
 			// avoid aliasing hintActs across iterations.
-			C.Add(RuleApplication{r, hb, t.config, concatActions(hintActs, t.actions)})
-
-			return true
-		})
+			C = append(C, RuleApplication{rule: r, binding: hb, config: t.config, actions: concatActions(hintActs, t.actions)})
+		}
 	}
 
 	return C, nil

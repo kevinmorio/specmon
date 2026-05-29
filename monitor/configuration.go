@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"slices"
+	"sort"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -221,12 +222,37 @@ func (c *Config) CountByName(name string) int {
 	return len(c.factsByName[name])
 }
 
+// String returns a deterministic textual rendering of the config.
+//
+// factsByName is a Go map and its iteration order is randomised, so
+// the display order needs an explicit sort. Per-bucket facts are also
+// sorted so two configs with the same multiset of facts always
+// stringify identically. seen is a multiset of terms; same treatment.
+// trace is an ordered list (rule-application firing order) and is
+// rendered in insertion order.
+//
+// Determinism here is debug-output hygiene; the monitor no longer
+// uses String() for hash identity (RuleApplication.Hash and
+// Config.Hash both have explicit implementations).
 func (c *Config) String() string {
+	// Sort predicate-name keys for stable outer order.
+	names := make([]string, 0, len(c.factsByName))
+	for name := range c.factsByName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	facts := make([]string, 0, c.factCount)
-	for _, bucket := range c.factsByName {
-		for _, f := range bucket {
-			facts = append(facts, f.String())
+	for _, name := range names {
+		bucket := c.factsByName[name]
+		bucketStrs := make([]string, len(bucket))
+		for i, f := range bucket {
+			bucketStrs[i] = f.String()
 		}
+		// Within a bucket the order is also map-derived (DFS through
+		// conflictSet's binding products), so sort for stability.
+		sort.Strings(bucketStrs)
+		facts = append(facts, bucketStrs...)
 	}
 	factsStr := strings.Join(facts, "\n")
 
@@ -234,6 +260,7 @@ func (c *Config) String() string {
 	for i := range c.seen {
 		seen[i] = c.seen[i].String()
 	}
+	sort.Strings(seen)
 	seenStr := strings.Join(seen, "\n")
 
 	trace := make([]string, len(c.trace))

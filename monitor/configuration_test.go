@@ -324,3 +324,37 @@ func TestCloneIsolatedAcrossSiblings(t *testing.T) {
 		t.Errorf("d1's DeleteFact leaked into c")
 	}
 }
+
+// TestConfigStringDeterministic verifies String() output is independent
+// of the order facts were added. factsByName is a Go map and
+// String() previously iterated it directly, giving randomised output
+// across runs - the bug that made RuleApplication's fmt.Sprintf-based
+// dedup non-deterministic before this branch added RuleApplication.Hash.
+func TestConfigStringDeterministic(t *testing.T) {
+	a := rule.NewFact("A", []term.Term{term.NewConstant("1")}, rule.LinearFact)
+	b := rule.NewFact("B", []term.Term{term.NewConstant("2")}, rule.LinearFact)
+	c := rule.NewFact("C", []term.Term{term.NewConstant("3")}, rule.LinearFact)
+
+	c1 := monitor.NewConfig()
+	c1.AddFact(a)
+	c1.AddFact(b)
+	c1.AddFact(c)
+
+	c2 := monitor.NewConfig()
+	c2.AddFact(c)
+	c2.AddFact(a)
+	c2.AddFact(b)
+
+	if c1.String() != c2.String() {
+		t.Errorf("String() order-dependent:\n  c1 = %q\n  c2 = %q", c1.String(), c2.String())
+	}
+
+	// Stronger: identical configs must stringify identically across
+	// multiple calls on the same receiver (Go map iteration is
+	// randomised per-iteration even for an unchanged map).
+	for i := 0; i < 10; i++ {
+		if c1.String() != c2.String() {
+			t.Errorf("String() non-deterministic across calls at i=%d", i)
+		}
+	}
+}
