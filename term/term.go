@@ -180,16 +180,38 @@ func NewFunction(name string, args []Term) *Function {
 }
 
 func (c *Constant[T]) Equal(t Term) bool {
+	// Fast path: when t is a Constant of the same generic
+	// instantiation (T) compare typed values directly. Avoids the
+	// AsBytes allocation each side previously paid (utils.IntToBytes
+	// for int constants, []byte(string) for string constants), which
+	// dominated Fact.Equal cost in the hot configSet / conflictSet
+	// paths.
+	if other, ok := any(t).(*Constant[T]); ok {
+		switch v1 := any(c.Value).(type) {
+		case int:
+			v2 := any(other.Value).(int)
+			return v1 == v2
+		case string:
+			v2 := any(other.Value).(string)
+			return v1 == v2
+		case []byte:
+			v2 := any(other.Value).([]byte)
+			return bytes.Equal(v1, v2)
+		}
+	}
+
+	// Slow path: t has a different ConstantConstraint instantiation
+	// (e.g. comparing *Constant[int] to *Constant[[]byte]). Fall back
+	// to byte-wise equality through AsBytes so heterogeneous constants
+	// that share a byte representation still compare equal.
 	b1, err := AsBytes(c)
 	if err != nil {
 		return false
 	}
-
 	b2, err := AsBytes(t)
 	if err != nil {
 		return false
 	}
-
 	return bytes.Equal(b1, b2)
 }
 
