@@ -91,6 +91,26 @@ type Monitor struct {
 	requirements map[*rule.Rule]map[string]int
 
 	// configs is the set of configurations that the monitor has.
+	//
+	// Dedup semantics: data.HashSet keys solely by Config.Hash() with
+	// no Equal fallback (data/hashmap.go), so two configurations that
+	// happen to collide on Hash() will silently merge here. The
+	// monitor relies on Config.Hash being multiplicity-preserving
+	// (sum-based with splitmix64 mixing, see configuration.go) so
+	// trivially-distinct configurations (e.g. differing only in fact
+	// multiplicity) cannot collide by construction. For all measured
+	// workloads (signal-large, wireguard) the empirical genuine-
+	// collision rate is zero.
+	//
+	// This is a workload-level guarantee, not a structural one. A
+	// configSet earlier in the branch added Config.Equal-based
+	// collision safety on top of hash bucketing, but the resulting
+	// 30-100% wall-time regression on signal-large was unacceptable
+	// for a property that never fired on the measured workloads. If
+	// either (a) a future workload exhibits hash collisions or
+	// (b) future infrastructure (term interning, fact pools) reduces
+	// the per-Equal cost to neutral, revisit by reintroducing the
+	// configSet container.
 	configs *data.HashSet[*Config]
 
 	// stats includes the statistics of the monitor.
