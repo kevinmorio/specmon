@@ -742,3 +742,78 @@ func TestMonitorTriggerAnchoredToCurrentEvent(t *testing.T) {
 		t.Errorf("missing configuration { [Gate()] | seen: <go,'1'>, <go,'2'> }")
 	}
 }
+
+// TestMonitorSameSignatureTriggersRegisteredOnce guards the per-key
+// dedup in NewMonitor. A rule with two triggers of the same (name,
+// arity) signature must be registered once under that key: a single
+// handleTriggers invocation already considers every trigger term of
+// the rule, so a duplicate registration would produce identical
+// RuleApplications and emit the rule's actions twice.
+//
+// Setup: R needs both <go, x> and <go, y> (same signature), with x, y
+// bound by the LHS facts A(x), B(y). The first go-event is buffered
+// (missing second trigger); the second completes the rule. Exactly one
+// action group must be returned for the completing event.
+func TestMonitorSameSignatureTriggersRegisteredOnce(t *testing.T) {
+	pairEv := func(name string, arg term.Term) *term.Function {
+		return term.NewFunction("pair", []term.Term{
+			term.NewFunction(name, []term.Term{}), arg,
+		})
+	}
+
+	setupRule := &rule.Rule{
+		Name: "Setup",
+		LHS:  []*rule.Fact{},
+		RHS: []*rule.Fact{
+			rule.NewFact("A", []term.Term{term.NewConstant("1")}, rule.LinearFact),
+			rule.NewFact("B", []term.Term{term.NewConstant("2")}, rule.LinearFact),
+		},
+		Attrs: map[string]rule.Attribute{
+			"trigger": rule.TermAttribute{Value: []term.Term{
+				pairEv("setup", term.NewFunction("pair", []term.Term{})),
+			}},
+		},
+	}
+
+	r := &rule.Rule{
+		Name: "R",
+		LHS: []*rule.Fact{
+			rule.NewFact("A", []term.Term{term.NewVariable("x")}, rule.LinearFact),
+			rule.NewFact("B", []term.Term{term.NewVariable("y")}, rule.LinearFact),
+		},
+		RHS: []*rule.Fact{},
+		Act: []*rule.Fact{
+			rule.NewFact(monitor.RewriteEventName, []term.Term{
+				term.NewFunction("out", []term.Term{term.NewVariable("x"), term.NewVariable("y")}),
+			}, rule.LinearFact),
+		},
+		Attrs: map[string]rule.Attribute{
+			"trigger": rule.TermAttribute{Value: []term.Term{
+				pairEv("go", term.NewVariable("x")),
+				pairEv("go", term.NewVariable("y")),
+			}},
+		},
+	}
+
+	mon, err := monitor.NewMonitor([]*rule.Rule{setupRule, r})
+	if err != nil {
+		t.Fatalf("NewMonitor: %v", err)
+	}
+
+	if _, err := mon.ProcessEvent(pairEv("setup", term.NewFunction("pair", []term.Term{}))); err != nil {
+		t.Fatalf("ProcessEvent(setup): %v", err)
+	}
+	if _, err := mon.ProcessEvent(pairEv("go", term.NewConstant("1"))); err != nil {
+		t.Fatalf("ProcessEvent(go,1): %v", err)
+	}
+
+	actions, err := mon.ProcessEvent(pairEv("go", term.NewConstant("2")))
+	if err != nil {
+		t.Fatalf("ProcessEvent(go,2): %v", err)
+	}
+
+	if len(actions) != 1 {
+		t.Errorf("expected exactly 1 action group for one rule firing, got %d "+
+			"(duplicate trigger-key registration repeats identical applications)", len(actions))
+	}
+}

@@ -171,15 +171,31 @@ func NewMonitor(rules []*rule.Rule) (*Monitor, error) {
 			continue
 		}
 
+		// A rule may carry several triggers (or hints) with the same
+		// (name, arity) signature. Register it once per key: a single
+		// handleTriggers/handleHints invocation already considers every
+		// trigger/hint term of the rule, so a duplicate registration
+		// would repeat the identical applications and emit their
+		// actions twice.
 		if hasTriggers {
+			seenKeys := make(map[ruleKey]struct{}, len(r.Triggers()))
 			for _, t := range r.Triggers() {
 				k := ruleKeyForTerm(t)
+				if _, ok := seenKeys[k]; ok {
+					continue
+				}
+				seenKeys[k] = struct{}{}
 				triggerRules[k] = append(triggerRules[k], r)
 			}
 		}
 		if hasHints {
+			seenKeys := make(map[ruleKey]struct{}, len(r.Hints()))
 			for _, t := range r.Hints() {
 				k := ruleKeyForTerm(t)
+				if _, ok := seenKeys[k]; ok {
+					continue
+				}
+				seenKeys[k] = struct{}{}
 				hintRules[k] = append(hintRules[k], r)
 			}
 		}
