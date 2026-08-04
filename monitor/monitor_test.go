@@ -27,18 +27,16 @@ import (
 	"github.com/specmon/specmon/term"
 )
 
-// TestMonitorHintTriggerActionsBothSurvive is Codex's regression test
-// for the hint-trigger dedup bug. handleHints wraps each downstream
-// trigger's outcome as RuleApplication{hint_rule, hint_binding,
-// trigger_config, hint_actions + trigger_actions}. If two downstream
-// triggers (T1, T2) both match the same event with the same binding
-// and land on the same final config, the three identity fields are
-// identical and only the action payload differs.
-//
-// On the pre-fix code (RuleApplication.Hash excluded actions) the two
-// applications collapsed in HashSet[RuleApplication] and ProcessEvent
-// emitted only one set of actions. The fix folds ordered actions into
-// the hash so both applications survive.
+// TestMonitorHintTriggerActionsBothSurvive verifies that action
+// forwarding is per rule application, not per resulting config.
+// handleHints wraps each downstream trigger's outcome as
+// RuleApplication{hint rule, hint binding, trigger config, hint
+// actions + trigger actions}. When two downstream triggers (T1, T2)
+// match the same event with the same binding and land on the same
+// final config, only the action payload differs, so any dedup of
+// applications short of their full action lists would drop one of
+// them. Applications are therefore collected as a plain slice and
+// only configs are deduplicated.
 func TestMonitorHintTriggerActionsBothSurvive(t *testing.T) {
 	// Hint H: matches event <go, x>. Consumes Init(), produces State(x),
 	// emits PPEvent(hintOut(x)). The Init() fact gets installed by an
@@ -193,23 +191,20 @@ func TestMonitorHintTriggerActionsBothSurvive(t *testing.T) {
 		t.Errorf("t1 PPEvent missing from rewrite output: %v", flat)
 	}
 	if !sawT2 {
-		t.Errorf("t2 PPEvent missing from rewrite output: %v — RuleApplication.Hash collapsed distinct-action applications?", flat)
+		t.Errorf("t2 PPEvent missing from rewrite output: %v — did application dedup collapse distinct-action applications?", flat)
 	}
 	if hintCount < 2 {
 		t.Errorf("hintOut PPEvent should appear once per downstream trigger (2 total), got %d", hintCount)
 	}
 }
 
-// TestMonitorHintTriggerEmptyActionsBothSurvive is the round-3
-// follow-on to TestMonitorHintTriggerActionsBothSurvive. The earlier
-// test had T1 and T2 emitting DIFFERENT actions, which the
-// action-folded hash could distinguish. This test sets T1 and T2 with
-// EMPTY Act lists landing on the same final config: with action-in-
-// hash the wrapped hint applications carry identical hash inputs and
-// HashSet[RuleApplication] would collapse them. The slice-based
-// collection ([]RuleApplication) cannot collapse them because there
-// is no dedup; the hint action must appear once per downstream
-// trigger path.
+// TestMonitorHintTriggerEmptyActionsBothSurvive strengthens
+// TestMonitorHintTriggerActionsBothSurvive: T1 and T2 have EMPTY Act
+// lists and land on the same final config, so the two wrapped hint
+// applications are indistinguishable by (rule, binding, config,
+// actions). ANY set-based dedup of RuleApplication would collapse
+// them; the slice-based collection keeps both, so the hint action
+// must appear once per downstream trigger path.
 func TestMonitorHintTriggerEmptyActionsBothSurvive(t *testing.T) {
 	hintRule := &rule.Rule{
 		Name: "H",
@@ -396,10 +391,10 @@ func TestMonitorMultipleFrFacts(t *testing.T) {
 	t.Logf("Processed event successfully, got %d result configs", len(resultConfigs))
 }
 
-// TestMonitorEpsilonActionsForwarded guards the fix for the dropped-
-// epsilon-actions bug: when an epsilon rule fires after a trigger rule
-// and emits a PPEvent action, ProcessEvent's returned action groups
-// must include the epsilon's actions, not just the trigger's.
+// TestMonitorEpsilonActionsForwarded verifies that epsilon-rule
+// actions are forwarded: when an epsilon rule fires after a trigger
+// rule and emits a PPEvent action, ProcessEvent's returned action
+// groups must include the epsilon's actions, not just the trigger's.
 //
 // Setup:
 //   - Trigger rule "Go" consumes event <go, ret> and produces State(ret).
@@ -408,9 +403,8 @@ func TestMonitorMultipleFrFacts(t *testing.T) {
 //     emits Act PPEvent(promoted(x)).
 //
 // On a single ProcessEvent(<go, 42>), both PPEvents must appear in the
-// returned actions. The fix concatenates epsilon's actions onto the
-// trigger's via concatActions; before the fix, handleEpsilon dropped
-// them.
+// returned actions: handleEpsilon returns the epsilon's Act facts and
+// handleTriggers concatenates them onto the trigger's.
 func TestMonitorEpsilonActionsForwarded(t *testing.T) {
 	goTrigger := &rule.Rule{
 		Name: "Go",
@@ -499,7 +493,7 @@ func TestMonitorEpsilonActionsForwarded(t *testing.T) {
 		t.Errorf("trigger PPEvent(triggered(...)) missing from actions: %v", flat)
 	}
 	if !sawPromoted {
-		t.Errorf("epsilon PPEvent(promoted(...)) missing from actions: %v — Fix 2 regression?", flat)
+		t.Errorf("epsilon PPEvent(promoted(...)) missing from actions: %v — epsilon actions dropped?", flat)
 	}
 }
 

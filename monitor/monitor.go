@@ -103,14 +103,13 @@ type Monitor struct {
 	// collision rate is zero.
 	//
 	// This is a workload-level guarantee, not a structural one. A
-	// configSet earlier in the branch added Config.Equal-based
-	// collision safety on top of hash bucketing, but the resulting
-	// 30-100% wall-time regression on signal-large was unacceptable
-	// for a property that never fired on the measured workloads. If
-	// either (a) a future workload exhibits hash collisions or
-	// (b) future infrastructure (term interning, fact pools) reduces
-	// the per-Equal cost to neutral, revisit by reintroducing the
-	// configSet container.
+	// container adding Config.Equal-based collision safety on top of
+	// hash bucketing was evaluated, but the resulting 30-100%
+	// wall-time regression on signal-large was unacceptable for a
+	// property that never fired on the measured workloads. If either
+	// (a) a future workload exhibits hash collisions or (b) future
+	// infrastructure (term interning, fact pools) reduces the
+	// per-Equal cost to neutral, revisit an Equal-checking container.
 	configs *data.HashSet[*Config]
 
 	// stats includes the statistics of the monitor.
@@ -226,17 +225,12 @@ func (m *Monitor) Stats() *Stats {
 // configuration, and the action facts emitted (forwarded to the
 // rewrite output when the monitor runs in rewrite mode).
 //
-// RuleApplication has no Hash or Equal method by design. It is
-// collected into plain []RuleApplication slices throughout the
-// monitor; structural deduplication happens later at the *Config
-// boundary (HashSet[*Config]) where it has well-defined meaning.
-// Trying to dedup at the RuleApplication level proved fragile in
-// review: every observable difference between two applications
-// (rule pointer, binding, resulting config, action list) would need
-// to be folded into a 64-bit hash with no collision fallback, and
-// each round of review found another field that needed inclusion.
-// Treating applications as a sequence instead of a set sidesteps
-// the entire identity-encoding problem.
+// RuleApplication has no Hash or Equal by design: applications are
+// collected as plain slices, and deduplication happens only at the
+// *Config boundary (HashSet[*Config]), where structural identity is
+// well defined. Deduplicating applications themselves would have to
+// fold every observable field (rule, binding, config, action list)
+// into a 64-bit hash with no collision fallback.
 type RuleApplication struct {
 	rule    *rule.Rule
 	binding *term.Binding

@@ -182,9 +182,9 @@ func NewFunction(name string, args []Term) *Function {
 func (c *Constant[T]) Equal(t Term) bool {
 	// Fast path: when t is a Constant of the same generic
 	// instantiation (T) compare typed values directly. Avoids the
-	// AsBytes allocation each side previously paid (utils.IntToBytes
+	// AsBytes allocation each side otherwise pays (utils.IntToBytes
 	// for int constants, []byte(string) for string constants), which
-	// dominated Fact.Equal cost in the hot configSet / conflictSet
+	// dominated Fact.Equal cost in the hot config-dedup / conflictSet
 	// paths.
 	if other, ok := any(t).(*Constant[T]); ok {
 		switch v1 := any(c.Value).(type) {
@@ -293,9 +293,9 @@ func (f *Function) String() string {
 // value bytes. Recomputed on every call - terms are mutable through
 // exported fields (Value), so any cache would risk going stale on
 // post-construction mutation. The recompute is one FNV pass over a
-// short byte slice; profiling showed the prior lazy cache won at most
-// a few percent and was the source of a data race (concurrent calls
-// raced on the cache write).
+// short byte slice; profiling showed a lazy cache wins at most a few
+// percent while introducing a data race (concurrent calls racing on
+// the cache write).
 func (c *Constant[T]) Hash() uint64 {
 	h := fnv.New64a()
 

@@ -220,10 +220,10 @@ func hasFact(c *monitor.Config, f *rule.Fact) bool {
 	return false
 }
 
-// TestCloneSourceMutationDoesNotCorruptClone guards the Fix 3
-// invariant: after c.Clone() returns d, ANY subsequent mutation on c
-// must not be observable in d. Before the fix Clone left
-// c.ownedBuckets unchanged, so c.DeleteFact would short-circuit
+// TestCloneSourceMutationDoesNotCorruptClone guards the symmetric
+// copy-on-write invariant: after c.Clone() returns d, ANY subsequent
+// mutation on c must not be observable in d. If Clone left
+// c.ownedBuckets unchanged, c.DeleteFact would short-circuit
 // ensureOwned and mutate the bucket array shared with d, corrupting
 // d's view of the deleted fact.
 func TestCloneSourceMutationDoesNotCorruptClone(t *testing.T) {
@@ -326,10 +326,9 @@ func TestCloneIsolatedAcrossSiblings(t *testing.T) {
 }
 
 // TestConfigStringDeterministic verifies String() output is independent
-// of the order facts were added. factsByName is a Go map and
-// String() previously iterated it directly, giving randomised output
-// across runs - the bug that made RuleApplication's fmt.Sprintf-based
-// dedup non-deterministic before this branch added RuleApplication.Hash.
+// of the order facts were added. factsByName is a Go map, so a naive
+// iteration would give randomised output across runs; String() must
+// sort for a stable rendering.
 func TestConfigStringDeterministic(t *testing.T) {
 	a := rule.NewFact("A", []term.Term{term.NewConstant("1")}, rule.LinearFact)
 	b := rule.NewFact("B", []term.Term{term.NewConstant("2")}, rule.LinearFact)

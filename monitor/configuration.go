@@ -217,9 +217,8 @@ func (c *Config) CountByName(name string) int {
 // trace is an ordered list (rule-application firing order) and is
 // rendered in insertion order.
 //
-// Determinism here is debug-output hygiene; the monitor no longer
-// uses String() for hash identity (RuleApplication.Hash and
-// Config.Hash both have explicit implementations).
+// Determinism here is debug-output hygiene; the monitor does not use
+// String() for identity (Config.Hash has an explicit implementation).
 func (c *Config) String() string {
 	// Sort predicate-name keys for stable outer order.
 	names := make([]string, 0, len(c.factsByName))
