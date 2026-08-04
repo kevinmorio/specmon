@@ -150,22 +150,6 @@ func (c *Config) AddFact(t *rule.Fact) {
 	c.invalidateHash()
 }
 
-// FactsByName returns a fresh slice of the facts whose predicate name
-// matches. The slice is independent of the Config's internal bucket so
-// callers may inspect or sort it without breaking factCount, the hash
-// cache, or copy-on-write ownership invariants. Returns nil when no
-// fact with that name exists.
-//
-// Internal call sites that need the bucket WITHOUT the per-call alloc
-// (the conflictSet hot path) read c.factsByName[name] directly.
-func (c *Config) FactsByName(name string) []*rule.Fact {
-	bucket := c.factsByName[name]
-	if len(bucket) == 0 {
-		return nil
-	}
-	return slices.Clone(bucket)
-}
-
 func (c *Config) Clone() *Config {
 	d := NewConfig()
 	d.seen = slices.Clone(c.seen)
@@ -200,12 +184,14 @@ func (c *Config) Clone() *Config {
 	return d
 }
 
-// FactsAsSlice is an alias for Facts kept for callers that already used
-// the older name.
-func (c *Config) FactsAsSlice() []*rule.Fact {
-	return c.Facts()
-}
-
+// FactsAsSliceWithName returns a fresh slice of the facts whose
+// predicate name matches. The slice is independent of the Config's
+// internal bucket so callers may inspect or sort it without breaking
+// factCount, the hash cache, or copy-on-write ownership invariants.
+// Returns nil when no fact with that name exists.
+//
+// Internal call sites that need the bucket WITHOUT the per-call alloc
+// (the conflictSet hot path) read c.factsByName[name] directly.
 func (c *Config) FactsAsSliceWithName(name string) []*rule.Fact {
 	bucket := c.factsByName[name]
 	if len(bucket) == 0 {

@@ -208,11 +208,11 @@ func BenchmarkConfigHashHot(b *testing.B) {
 	}
 }
 
-// hasFact reports whether c.FactsByName(name) contains a fact Equal
+// hasFact reports whether c.FactsAsSliceWithName(name) contains a fact Equal
 // to f. Used by Clone tests as a structural check that does not rely
 // on slice-header identity.
 func hasFact(c *monitor.Config, f *rule.Fact) bool {
-	for _, g := range c.FactsByName(f.Name) {
+	for _, g := range c.FactsAsSliceWithName(f.Name) {
 		if g != nil && g.Equal(f) {
 			return true
 		}
@@ -244,14 +244,14 @@ func TestCloneSourceMutationDoesNotCorruptClone(t *testing.T) {
 
 	if !hasFact(d, f) {
 		t.Errorf("c.DeleteFact corrupted d: d no longer contains f. "+
-			"Bucket = %v", d.FactsByName(f.Name))
+			"Bucket = %v", d.FactsAsSliceWithName(f.Name))
 	}
 	// Stronger: the slice header length must still match what d had
 	// before the mutation. slices.Delete shifts and shortens the
 	// source's slice; the clone's slice header is independent so its
 	// length must be unchanged.
-	if got := len(d.FactsByName(f.Name)); got != 1 {
-		t.Errorf("d.FactsByName(F) length changed after c mutation: got %d, want 1", got)
+	if got := len(d.FactsAsSliceWithName(f.Name)); got != 1 {
+		t.Errorf("d.FactsAsSliceWithName(F) length changed after c mutation: got %d, want 1", got)
 	}
 }
 
@@ -274,8 +274,8 @@ func TestCloneSourceAddDoesNotCorruptClone(t *testing.T) {
 	c.DeleteFact(g) // bucket back to [f] with cap >= 2
 
 	d := c.Clone()
-	if len(d.FactsByName(f.Name)) != 1 {
-		t.Fatalf("d should have one fact; got %d", len(d.FactsByName(f.Name)))
+	if len(d.FactsAsSliceWithName(f.Name)) != 1 {
+		t.Fatalf("d should have one fact; got %d", len(d.FactsAsSliceWithName(f.Name)))
 	}
 
 	// Add a fresh fact to c. If c kept ownership and append reuses
@@ -292,9 +292,9 @@ func TestCloneSourceAddDoesNotCorruptClone(t *testing.T) {
 		t.Fatalf("c.DeleteFact(f) returned false")
 	}
 
-	bucket := d.FactsByName(f.Name)
+	bucket := d.FactsAsSliceWithName(f.Name)
 	if len(bucket) != 1 {
-		t.Fatalf("d.FactsByName length changed: got %d, want 1", len(bucket))
+		t.Fatalf("d.FactsAsSliceWithName length changed: got %d, want 1", len(bucket))
 	}
 	if bucket[0] == nil || !bucket[0].Equal(f) {
 		t.Errorf("d's bucket[0] was mutated by c's later AddFact + DeleteFact: got %v, want F(a)", bucket[0])

@@ -19,9 +19,7 @@
 package term
 
 import (
-	"encoding/binary"
 	"fmt"
-	"hash/fnv"
 	"sort"
 	"strings"
 
@@ -153,24 +151,6 @@ func (b *Binding) Compatible(bp *Binding) bool {
 
 func (b *Binding) Self() *Binding {
 	return b
-}
-
-func (b *Binding) Hash() uint64 {
-	h := fnv.New64a()
-
-	b.IterateSorted(func(k, v Term) bool {
-		var buf [8]byte
-
-		binary.LittleEndian.PutUint64(buf[:], k.Hash())
-		h.Write(buf[:])
-
-		binary.LittleEndian.PutUint64(buf[:], v.Hash())
-		h.Write(buf[:])
-
-		return true
-	})
-
-	return h.Sum64()
 }
 
 // Get returns the value bound to k and whether k is present.

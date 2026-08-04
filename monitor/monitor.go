@@ -259,10 +259,6 @@ func (m *Monitor) ProcessEvent(a term.Term) ([][]*rule.Fact, error) {
 		var appliedTriggers []RuleApplication
 
 		for _, r := range m.triggerRules[aKey] {
-			if !canMatchLHS(c, m.requirements[r]) {
-				continue
-			}
-
 			next, err := m.handleTriggers(c, a, r)
 			if err != nil {
 				return nil, err
@@ -274,10 +270,6 @@ func (m *Monitor) ProcessEvent(a term.Term) ([][]*rule.Fact, error) {
 		var appliedHints []RuleApplication
 
 		for _, r := range m.hintRules[aKey] {
-			if !canMatchLHS(c, m.requirements[r]) {
-				continue
-			}
-
 			next, err := m.handleHints(c, a, r)
 			if err != nil {
 				return nil, err
@@ -868,16 +860,6 @@ func checkWellformedness(rules []*rule.Rule) error {
 	}
 
 	return nil
-}
-
-func splitPairFirstName(t term.Term) string {
-	fn, _ := splitPair(t)
-
-	if fn == nil {
-		log.Fatalf("unexpected hint or trigger: %s", t)
-	}
-
-	return term.Must(term.AsFunction(fn)).Name
 }
 
 // splitPairSignature returns the (name, arity) of the first component of
