@@ -1,4 +1,4 @@
-// Copyright (C) 2025 CISPA Helmholtz Center for Information Security
+// Copyright (C) 2025-2026 CISPA Helmholtz Center for Information Security
 // Author: Kevin Morio <kevin.morio@cispa.de>
 //
 // This file is part of SpecMon.
@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/specmon/specmon/rule"
+	"github.com/specmon/specmon/term"
 )
 
 /*
@@ -253,5 +254,35 @@ func TestIsStartRuleOf(t *testing.T) {
 	rule2 = &rule.Rule{Name: "R_0_1"}
 	if got := rule.IsStartRuleOf(rule1, rule2); got != false {
 		t.Errorf("IsStartRuleOf(%v, %v) = %v, want %v", rule1, rule2, got, false)
+	}
+}
+
+func TestTranslateKeepsReservedEvaluatorsInline(t *testing.T) {
+	t.Parallel()
+
+	x := term.NewVariable("x")
+	for _, operation := range []*term.Function{
+		term.NewFunction(term.XorFunctionName, []term.Term{x, term.NewConstant[int64](1)}),
+		term.NewFunction(term.NotFunctionName, []term.Term{x}),
+		term.NewFunction(term.ReverseFuncName, []term.Term{x}),
+	} {
+		t.Run(operation.Name, func(t *testing.T) {
+			t.Parallel()
+			original := &rule.Rule{
+				Name: "ReservedEvaluator",
+				RHS: []*rule.Fact{
+					rule.NewFact("Result", []term.Term{operation}, rule.LinearFact),
+				},
+				Attrs: map[string]rule.Attribute{},
+			}
+
+			got := rule.Translate(original)
+			if len(got) != 1 {
+				t.Fatalf("Translate returned %d rules, want one", len(got))
+			}
+			if !got[0].RHS[0].Args[0].Equal(operation) {
+				t.Fatalf("Translate decomposed reserved evaluator %s: %v", operation.Name, got)
+			}
+		})
 	}
 }

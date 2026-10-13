@@ -43,6 +43,27 @@ func parseRule(t *testing.T, conclusion string) ([]*rule.Rule, error) {
 	return parser.ParseFile(context.Background(), path, nil)
 }
 
+func TestParseConstructSideXorAndNot(t *testing.T) {
+	t.Parallel()
+
+	rules, err := parseRule(t, "Next(x XOR y, not(x))")
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if len(rules) != 1 || len(rules[0].RHS) != 1 || len(rules[0].RHS[0].Args) != 2 {
+		t.Fatalf("unexpected parsed rules: %v", rules)
+	}
+
+	xor, err := term.AsFunction(rules[0].RHS[0].Args[0])
+	if err != nil || xor.Name != term.XorFunctionName || len(xor.Args) != term.BinaryArity {
+		t.Fatalf("parsed xor = %v, error = %v", xor, err)
+	}
+	not, err := term.AsFunction(rules[0].RHS[0].Args[1])
+	if err != nil || not.Name != term.NotFunctionName || len(not.Args) != 1 {
+		t.Fatalf("parsed not = %v, error = %v", not, err)
+	}
+}
+
 func TestParseInt64Boundaries(t *testing.T) {
 	t.Parallel()
 

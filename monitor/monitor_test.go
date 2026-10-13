@@ -20,6 +20,7 @@ package monitor_test
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -944,6 +945,39 @@ func TestProcessEventReturnsEpsilonEvaluationErrors(t *testing.T) {
 		if config.CountByName(invalidFactName) != 0 {
 			t.Fatalf("ProcessEvent published an invalid epsilon result: %v", config.Facts())
 		}
+	}
+}
+
+// TestRuleConclusionKeepsUnobservedCallsSymbolic checks that a rule whose
+// conclusion concatenates calls that are neither evaluable nor observed
+// applies and stores the concatenation symbolically.
+func TestRuleConclusionKeepsUnobservedCallsSymbolic(t *testing.T) {
+	x := term.NewVariable("x")
+	r := term.NewVariable("r")
+	call := func(name string, args ...term.Term) *term.Function { return term.NewFunction(name, args) }
+	field := func(value term.Term) term.Term { return call(string(term.FormatByteType), value) }
+	concatenation := call(term.CatFunctionName, field(call("symbolicF", x)), field(call("symbolicG", x)))
+	build := &rule.Rule{
+		Name: "BuildSymbolic",
+		RHS:  []*rule.Fact{rule.NewFact("SymbolicOut", []term.Term{concatenation}, rule.LinearFact)},
+		Attrs: map[string]rule.Attribute{
+			rule.TriggerAttributeName: rule.TermAttribute{Value: []term.Term{call(term.PairFunctionName, call("symbolicGo", x), r)}},
+		},
+	}
+	m, err := monitor.NewMonitor([]*rule.Rule{build})
+	if err != nil {
+		t.Fatalf("NewMonitor: %v", err)
+	}
+	value := term.NewConstant([]byte{1})
+	if _, err := m.ProcessEvent(call(term.PairFunctionName, call("symbolicGo", value), call(term.PairFunctionName))); err != nil {
+		t.Fatalf("ProcessEvent: %v", err)
+	}
+	binding := term.NewBinding()
+	binding.Set(x, value)
+	want := rule.NewFact("SymbolicOut", []term.Term{concatenation.Subst(binding)}, rule.LinearFact)
+	configs := m.Configs()
+	if len(configs) != 1 || !slices.ContainsFunc(configs[0].Facts(), want.Equal) {
+		t.Fatalf("configurations = %v, want one with %s", configs, want)
 	}
 }
 

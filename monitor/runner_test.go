@@ -167,6 +167,39 @@ func rewritingRunnerMonitor(t *testing.T) *monitor.Monitor {
 	return m
 }
 
+func TestRunReturnsBitwiseEvaluationErrors(t *testing.T) {
+	t.Parallel()
+
+	event := runnerEvent(runnerInputEventName, term.NewConstant[int64](1))
+	trigger := runnerEvent(runnerInputEventName, term.NewVariable(runnerValueName))
+	invalid := term.NewFunction(term.XorFunctionName, []term.Term{
+		term.NewConstant("text"),
+		term.NewConstant[int64](1),
+	})
+	r := &rule.Rule{
+		Name: runnerRuleName,
+		RHS: []*rule.Fact{
+			rule.NewFact("InvalidResult", []term.Term{invalid}, rule.LinearFact),
+		},
+		Attrs: map[string]rule.Attribute{
+			rule.TriggerAttributeName: rule.TermAttribute{Value: []term.Term{trigger}},
+		},
+	}
+	m, err := monitor.NewMonitor([]*rule.Rule{r})
+	if err != nil {
+		t.Fatalf("NewMonitor: %v", err)
+	}
+
+	reader := &closeTrackingReader{Reader: strings.NewReader(string(runnerEventLine(t, event)))}
+	violation, err := m.Run(context.Background(), reader, nil)
+	if violation != nil {
+		t.Fatalf("Run returned violation %v for an evaluator error", violation)
+	}
+	if !errors.Is(err, term.ErrEvaluation) || !errors.Is(err, term.ErrInvalidType) {
+		t.Fatalf("Run error = %v, want ErrEvaluation wrapping ErrInvalidType", err)
+	}
+}
+
 func TestStatsSummaryDoesNotMutateSamples(t *testing.T) {
 	t.Parallel()
 
