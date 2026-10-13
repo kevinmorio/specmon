@@ -26,27 +26,32 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/specmon/specmon/data"
 	"github.com/specmon/specmon/utils"
 )
 
 const (
-	ConstantType      = "constant"
-	VariableType      = "variable"
-	FunctionType      = "function"
-	PairFunctionName  = "pair"
-	SliceFunctionName = "slice"
-	ReverseFuncName   = "reverse"
-	ExpFunctionName   = "exp"
-	AndFunctionName   = "and"
-	OrFunctionName    = "or"
-	AddFunctionName   = "add"
-	BinaryArity       = 2
-	TernaryArity      = 3
+	ConstantType       = "constant"
+	VariableType       = "variable"
+	FunctionType       = "function"
+	IntConstantKind    = "int"
+	StringConstantKind = "string"
+	BytesConstantKind  = "bytes"
+	PairFunctionName   = "pair"
+	SliceFunctionName  = "slice"
+	ReverseFuncName    = "reverse"
+	ExpFunctionName    = "exp"
+	AndFunctionName    = "and"
+	OrFunctionName     = "or"
+	AddFunctionName    = "add"
+	BinaryArity        = 2
+	TernaryArity       = 3
 
 	PublicPrefix = "$"
 )
@@ -110,7 +115,7 @@ func (t *ConversionError) Error() string {
 }
 
 type ConstantConstraint interface {
-	int | string | []byte
+	int64 | string | []byte
 }
 
 type Constant[T ConstantConstraint] struct {
@@ -183,13 +188,13 @@ func (c *Constant[T]) Equal(t Term) bool {
 	// Fast path: when t is a Constant of the same generic
 	// instantiation (T) compare typed values directly. Avoids the
 	// AsBytes allocation each side otherwise pays (utils.IntToBytes
-	// for int constants, []byte(string) for string constants), which
+	// for int64 constants, []byte(string) for string constants), which
 	// dominated Fact.Equal cost in the hot config-dedup / conflictSet
 	// paths.
 	if other, ok := any(t).(*Constant[T]); ok {
 		switch v1 := any(c.Value).(type) {
-		case int:
-			v2 := any(other.Value).(int)
+		case int64:
+			v2 := any(other.Value).(int64)
 			return v1 == v2
 		case string:
 			v2 := any(other.Value).(string)
@@ -201,7 +206,7 @@ func (c *Constant[T]) Equal(t Term) bool {
 	}
 
 	// Slow path: t has a different ConstantConstraint instantiation
-	// (e.g. comparing *Constant[int] to *Constant[[]byte]). Fall back
+	// (e.g. comparing *Constant[int64] to *Constant[[]byte]). Fall back
 	// to byte-wise equality through AsBytes so heterogeneous constants
 	// that share a byte representation still compare equal.
 	b1, err := AsBytes(c)
@@ -246,8 +251,8 @@ func (f *Function) Equal(a Term) bool {
 
 func (c *Constant[T]) String() string {
 	switch t := any(&c.Value).(type) {
-	case *int:
-		return strconv.Itoa(*t)
+	case *int64:
+		return strconv.FormatInt(*t, 10)
 	case *string:
 		return fmt.Sprintf("'%s'", *t)
 	case *[]byte:
@@ -302,7 +307,7 @@ func (c *Constant[T]) Hash() uint64 {
 	h.Write([]byte(c.Type))
 
 	switch v := any(c.Value).(type) {
-	case int:
+	case int64:
 		buf := utils.IntToBytes(v, binary.LittleEndian)
 		h.Write(buf)
 	case string:
@@ -364,13 +369,28 @@ func (c *Constant[T]) JSON() string {
 }
 
 // MarshalJSON implements the json.Marshaler interface.
-// The value is converted to a string as otherwise the
-// default marshalling would convert a []byte value to base64.
 func (c *Constant[T]) MarshalJSON() ([]byte, error) {
+	var kind string
+	var value any
+	switch v := any(c.Value).(type) {
+	case int64:
+		kind = IntConstantKind
+		value = strconv.FormatInt(v, 10)
+	case string:
+		kind = StringConstantKind
+		value = v
+	case []byte:
+		kind = BytesConstantKind
+		if v != nil {
+			value = "0x" + hex.EncodeToString(v)
+		}
+	}
+
 	b, err := json.Marshal(struct {
-		Value string `json:"value"`
-		Type  string `json:"type"`
-	}{strings.Trim(c.String(), "'"), c.Type})
+		Type      string `json:"type"`
+		ConstKind string `json:"const_kind"`
+		Value     any    `json:"value"`
+	}{c.Type, kind, value})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal constant to JSON: %w", err)
 	}
@@ -418,75 +438,136 @@ func (f *Function) fromWeakTerm(w WeakTerm) error {
 	}
 	f.Name = w.Name
 	f.Type = w.Type
+	f.Args = make([]Term, 0, len(w.Args))
 
-	for _, arg := range w.Args {
+	for i, arg := range w.Args {
 		switch arg.Type {
 		case ConstantType:
-			switch r := arg.Value.(type) {
-			// These types can be safely cast to int.
-			case int8, int16, int32, int:
-				c := NewConstant[int](r.(int))
-				f.Args = append(f.Args, c)
-				// This can only be safely cast if int coincides to int64.
-			case int64:
-				if int64(int(r)) != r {
-					return fmt.Errorf("integer overflow on %d", r)
-				}
-				c := NewConstant[int](int(r))
-				f.Args = append(f.Args, c)
-				// These can only be safely cast if they are basically integers.
-			case float32:
-				if float32(int(r)) != r {
-					return fmt.Errorf("floats are not supported, got %f", r)
-				}
-				c := NewConstant[int](int(r))
-				f.Args = append(f.Args, c)
-			case float64:
-				if float64(int(r)) != r {
-					return fmt.Errorf("floats are not supported, got %f", r)
-				}
-				c := NewConstant[int](int(r))
-				f.Args = append(f.Args, c)
-			case string:
-				if strings.HasPrefix(r, "0x") {
-					bytes, err := hex.DecodeString(r[2:])
-					if err == nil {
-						c := NewConstant[[]byte](bytes)
-						f.Args = append(f.Args, c)
-
-						continue
-					}
-				}
-
-				c := NewConstant[string](r)
-				f.Args = append(f.Args, c)
-			case []byte:
-				c := NewConstant[[]byte](r)
-				f.Args = append(f.Args, c)
-			case nil:
-				c := NewConstant[[]byte](nil)
-				f.Args = append(f.Args, c)
-			default:
-				return fmt.Errorf("unsupported type of %v", r)
+			constant, err := constantFromWeakTerm(arg)
+			if err != nil {
+				return fmt.Errorf("argument %d: %w", i, err)
 			}
+			f.Args = append(f.Args, constant)
 		case VariableType:
 			var v Variable
 			if err := v.fromWeakTerm(arg); err != nil {
-				return err
+				return fmt.Errorf("argument %d: %w", i, err)
 			}
 			f.Args = append(f.Args, &v)
 		case FunctionType:
 			var tp Function
 			if err := tp.fromWeakTerm(arg); err != nil {
-				return err
+				return fmt.Errorf("argument %d: %w", i, err)
 			}
 			f.Args = append(f.Args, &tp)
 		default:
-			return fmt.Errorf("unknown type '%s'", arg.Type)
+			return fmt.Errorf("argument %d: unknown type '%s'", i, arg.Type)
 		}
 	}
 
 	return nil
+}
+
+func constantFromWeakTerm(w WeakTerm) (Term, error) {
+	if w.Type != ConstantType {
+		return nil, fmt.Errorf("expected type '%s', got '%s'", ConstantType, w.Type)
+	}
+
+	switch w.ConstKind {
+	case IntConstantKind:
+		if !w.valuePresent {
+			return nil, errors.New("missing typed integer value")
+		}
+		var spelling string
+		switch value := w.Value.(type) {
+		case string:
+			spelling = value
+		case json.Number:
+			spelling = value.String()
+		default:
+			return nil, fmt.Errorf("typed integer has incompatible value %T", w.Value)
+		}
+		integer, err := parseCanonicalInt(spelling)
+		if err != nil {
+			return nil, fmt.Errorf("invalid typed integer %q: %w", spelling, err)
+		}
+		return NewConstant(integer), nil
+	case StringConstantKind:
+		if !w.valuePresent {
+			return nil, errors.New("missing typed string value")
+		}
+		value, ok := w.Value.(string)
+		if !ok {
+			return nil, fmt.Errorf("typed string has incompatible value %T", w.Value)
+		}
+		return NewConstant(value), nil
+	case BytesConstantKind:
+		if !w.valuePresent {
+			return nil, errors.New("missing typed bytes value")
+		}
+		if w.Value == nil {
+			return NewConstant[[]byte](nil), nil
+		}
+		value, ok := w.Value.(string)
+		if !ok {
+			return nil, fmt.Errorf("typed bytes have incompatible value %T", w.Value)
+		}
+		decoded, err := decodeTypedBytes(value)
+		if err != nil {
+			return nil, err
+		}
+		return NewConstant(decoded), nil
+	case "":
+		return legacyConstant(w)
+	default:
+		return nil, fmt.Errorf("unknown const_kind %q", w.ConstKind)
+	}
+}
+
+func legacyConstant(w WeakTerm) (Term, error) {
+	if !w.valuePresent || w.Value == nil {
+		return NewConstant[[]byte](nil), nil
+	}
+
+	switch value := w.Value.(type) {
+	case json.Number:
+		integer, err := strconv.ParseInt(value.String(), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid legacy integer %q: %w", value, err)
+		}
+		return NewConstant(integer), nil
+	case string:
+		if decoded, err := decodeTypedBytes(value); err == nil {
+			return NewConstant(decoded), nil
+		}
+		return NewConstant(value), nil
+	default:
+		return nil, fmt.Errorf("unsupported legacy constant value %T", w.Value)
+	}
+}
+
+// parseCanonicalInt accepts only the spelling that strconv.FormatInt
+// produces: no plus sign, no leading zeroes and no -0.
+func parseCanonicalInt(value string) (int64, error) {
+	integer, err := strconv.ParseInt(value, 10, 64)
+	if err == nil && strconv.FormatInt(integer, 10) != value {
+		err = errors.New("non-canonical decimal integer")
+	}
+	return integer, err
+}
+
+func decodeTypedBytes(value string) ([]byte, error) {
+	if !strings.HasPrefix(value, "0x") || len(value)%2 != 0 {
+		return nil, errors.New("typed bytes require an even lowercase 0x prefix")
+	}
+	decoded, err := hex.DecodeString(value[2:])
+	if err != nil {
+		return nil, fmt.Errorf("invalid typed bytes: %w", err)
+	}
+	if decoded == nil {
+		decoded = []byte{}
+	}
+	return decoded, nil
 }
 
 func AsConstant[T ConstantConstraint](t Term) (*Constant[T], error) {
@@ -522,9 +603,9 @@ func AsFunction(t Term) (*Function, error) {
 	return f, nil
 }
 
-func AsInt(t Term) (int, error) {
+func AsInt(t Term) (int64, error) {
 	switch c := any(t).(type) {
-	case *Constant[int]:
+	case *Constant[int64]:
 		return c.Value, nil
 	case *Constant[[]byte]:
 		v, err := utils.BytesToInt(c.Value, internalByteOrder())
@@ -541,7 +622,7 @@ func AsInt(t Term) (int, error) {
 
 func AsBytes(t Term) ([]byte, error) {
 	switch c := any(t).(type) {
-	case *Constant[int]:
+	case *Constant[int64]:
 		return utils.IntToBytes(c.Value, internalByteOrder()), nil
 	case *Constant[string]:
 		return []byte(c.Value), nil
@@ -566,19 +647,106 @@ func (v *Variable) IsPublic() bool {
 }
 
 func (f *Function) UnmarshalJSON(data []byte) error {
-	var w WeakTerm
-	if err := json.Unmarshal(data, &w); err != nil {
+	w, err := decodeWeakTerm(data)
+	if err != nil {
 		return fmt.Errorf("failed to unmarshal JSON: %w", err)
 	}
 
 	return f.fromWeakTerm(w)
 }
 
+// WeakTerm is a term as it is decoded from JSON. SpecMon encodes terms
+// through their own MarshalJSON methods, not through WeakTerm: since Value
+// is omitted when it is nil, a WeakTerm of typed nil bytes encodes without
+// its value and does not decode again.
 type WeakTerm struct {
-	Name  string     `json:"name,omitempty"`
-	Type  string     `json:"type,omitempty"`
-	Value any        `json:"value,omitempty"`
-	Args  []WeakTerm `json:"args,omitempty"`
+	Name      string     `json:"name,omitempty"`
+	Type      string     `json:"type,omitempty"`
+	ConstKind string     `json:"const_kind,omitempty"`
+	Value     any        `json:"value,omitempty"`
+	Args      []WeakTerm `json:"args,omitempty"`
+
+	valuePresent bool
+}
+
+// setValue decodes a JSON value that json.Unmarshal has already validated
+// into w.Value: a string, null, or a number kept exact as json.Number.
+func (w *WeakTerm) setValue(data []byte) error {
+	w.valuePresent = true
+	switch data[0] {
+	case '"':
+		contents := data[1 : len(data)-1]
+		if bytes.IndexByte(contents, '\\') < 0 && utf8.Valid(contents) {
+			w.Value = string(contents)
+			return nil
+		}
+		var decoded string
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			return fmt.Errorf("decode string value: %w", err)
+		}
+		w.Value = decoded
+	case 'n':
+	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		w.Value = json.Number(data)
+	default:
+		return errors.New("unsupported JSON value type")
+	}
+	return nil
+}
+
+func (w *WeakTerm) UnmarshalJSON(data []byte) error {
+	decoded, err := decodeWeakTerm(data)
+	if err != nil {
+		return err
+	}
+	*w = decoded
+	return nil
+}
+
+// weakTermJSON is the wire form of a term. It has no UnmarshalJSON method,
+// so a single json.Unmarshal validates and decodes a whole term tree once.
+// Calling json.Unmarshal per nesting level would validate and scan every
+// subtree again at each level.
+//
+// Duplicate members in one object are unsupported. encoding/json decodes a
+// repeated "args" array into the elements of the earlier one, so fields
+// that the later elements omit are merged rather than replaced.
+type weakTermJSON struct {
+	Name      string          `json:"name"`
+	Type      string          `json:"type"`
+	ConstKind string          `json:"const_kind"`
+	Value     json.RawMessage `json:"value"`
+	Args      []weakTermJSON  `json:"args"`
+}
+
+func decodeWeakTerm(data []byte) (WeakTerm, error) {
+	var decoded weakTermJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return WeakTerm{}, err
+	}
+	return decoded.weakTerm()
+}
+
+// weakTerm converts the arguments, in order, before the node's own value,
+// so a value fault in an argument is reported before one in its parent.
+func (d *weakTermJSON) weakTerm() (WeakTerm, error) {
+	w := WeakTerm{Name: d.Name, Type: d.Type, ConstKind: d.ConstKind}
+	if d.Args != nil {
+		w.Args = make([]WeakTerm, len(d.Args))
+		for i := range d.Args {
+			arg, err := d.Args[i].weakTerm()
+			if err != nil {
+				return WeakTerm{}, err
+			}
+			w.Args[i] = arg
+		}
+	}
+	if d.Value != nil {
+		if err := w.setValue(d.Value); err != nil {
+			return WeakTerm{}, err
+		}
+	}
+	return w, nil
 }
 
 // VarCount returns the number of variables contained in t.
@@ -1069,6 +1237,10 @@ func Evaluate(t Term) (Term, error) {
 		return t, nil
 	}
 
+	if f.Name == AddFunctionName && len(f.Args) != BinaryArity {
+		return nil, ErrBinaryArity
+	}
+
 	newArgs, modified, err := evaluateArguments(f.Args)
 	if err != nil {
 		return nil, err
@@ -1077,7 +1249,9 @@ func Evaluate(t Term) (Term, error) {
 	switch f.Name {
 	case CatFunctionName:
 		return handleCatFunction(f, newArgs, modified)
-	case AddFunctionName, AndFunctionName, OrFunctionName:
+	case AddFunctionName:
+		return handleAddFunction(f, newArgs, modified)
+	case AndFunctionName, OrFunctionName:
 		return handleArithmeticFunction(f, newArgs, modified)
 	case SliceFunctionName:
 		return handleSliceFunction(f, newArgs, modified)
@@ -1127,6 +1301,21 @@ func evaluateArguments(args []Term) ([]Term, bool, error) {
 	return newArgs, true, nil
 }
 
+// unevaluated returns the residual of f: f itself, or a copy with the
+// evaluated arguments if evaluation changed any of them.
+func unevaluated(f *Function, args []Term, modified bool) Term {
+	if modified {
+		return NewFunction(f.Name, args)
+	}
+	return f
+}
+
+// operandsKnown reports whether every argument is a ground term that is not
+// a call, so that an operation on them can be evaluated.
+func operandsKnown(args []Term) bool {
+	return !slices.ContainsFunc(args, func(arg Term) bool { return !IsGround(arg) || arg.GetType() == FunctionType })
+}
+
 func handleCatFunction(f *Function, args []Term, modified bool) (Term, error) {
 	fields := make([]*Function, len(f.Args))
 
@@ -1148,6 +1337,26 @@ func handleCatFunction(f *Function, args []Term, modified bool) (Term, error) {
 	}
 
 	return NewConstant[[]byte](bytes), nil
+}
+
+func handleAddFunction(f *Function, args []Term, modified bool) (Term, error) {
+	if !operandsKnown(args) {
+		return unevaluated(f, args, modified), nil
+	}
+
+	left, err := AsInt(args[0])
+	if err != nil || left < 0 {
+		return nil, fmt.Errorf("%w: invalid left add operand", ErrEvaluation)
+	}
+	right, err := AsInt(args[1])
+	if err != nil || right < 0 {
+		return nil, fmt.Errorf("%w: invalid right add operand", ErrEvaluation)
+	}
+	if right > math.MaxInt64-left {
+		return nil, fmt.Errorf("%w: add overflow", ErrEvaluation)
+	}
+
+	return NewConstant(left + right), nil
 }
 
 func handleArithmeticFunction(f *Function, args []Term, modified bool) (Term, error) {
@@ -1173,10 +1382,8 @@ func handleArithmeticFunction(f *Function, args []Term, modified bool) (Term, er
 		return f, nil
 	}
 
-	var result int
+	var result int64
 	switch f.Name {
-	case AddFunctionName:
-		result = left + right
 	case AndFunctionName:
 		result = left & right
 	case OrFunctionName:
@@ -1185,8 +1392,8 @@ func handleArithmeticFunction(f *Function, args []Term, modified bool) (Term, er
 
 	// Result type is the same as the type of the first argument.
 	switch ft := args[0].(type) {
-	case *Constant[int]:
-		return NewConstant[int](result), nil
+	case *Constant[int64]:
+		return NewConstant[int64](result), nil
 	case *Constant[[]byte]:
 		b := utils.IntToBytes(result, internalByteOrder())
 
@@ -1203,29 +1410,20 @@ func handleSliceFunction(f *Function, args []Term, modified bool) (Term, error) 
 
 	data, err := AsBytes(args[0])
 	if err != nil {
-		if modified {
-			return NewFunction(f.Name, args), nil
-		}
-		return f, nil
+		return unevaluated(f, args, modified), nil
 	}
 
 	start, err := AsInt(args[1])
 	if err != nil {
-		if modified {
-			return NewFunction(f.Name, args), nil
-		}
-		return f, nil
+		return unevaluated(f, args, modified), nil
 	}
 
 	end, err := AsInt(args[2])
 	if err != nil {
-		if modified {
-			return NewFunction(f.Name, args), nil
-		}
-		return f, nil
+		return unevaluated(f, args, modified), nil
 	}
 
-	dataLen := len(data)
+	dataLen := int64(len(data))
 
 	// Resolve start index
 	resolvedStart := start
@@ -1261,7 +1459,7 @@ func handleSliceFunction(f *Function, args []Term, modified bool) (Term, error) 
 		return NewConstant[[]byte]([]byte{}), nil
 	}
 
-	return NewConstant[[]byte](data[resolvedStart:resolvedEnd]), nil
+	return NewConstant[[]byte](data[int(resolvedStart):int(resolvedEnd)]), nil
 }
 
 func handleReverseFunction(f *Function, args []Term, modified bool) (Term, error) {
@@ -1275,10 +1473,7 @@ func handleReverseFunction(f *Function, args []Term, modified bool) (Term, error
 	if err != nil {
 		// If the argument cannot be converted to bytes (e.g., it's a variable),
 		// return the function call, possibly with an evaluated argument.
-		if modified {
-			return NewFunction(f.Name, args), nil
-		}
-		return f, nil
+		return unevaluated(f, args, modified), nil
 	}
 
 	// Slices.Reverse is in-place, so we must copy the data first
@@ -1289,20 +1484,17 @@ func handleReverseFunction(f *Function, args []Term, modified bool) (Term, error
 
 	// Preserve the original constant type.
 	switch arg.(type) {
-	case *Constant[int]:
-		// The size of the byte slice is preserved, so this conversion is safe.
-		newValue, _ := utils.BytesToInt(reversedBytes, internalByteOrder())
-		return NewConstant[int](newValue), nil
+	case *Constant[int64]:
+		// Reinterpret the reversed two's-complement bit pattern as a signed value.
+		newValue := int64(internalByteOrder().Uint64(reversedBytes)) //nolint:gosec
+		return NewConstant(newValue), nil
 	case *Constant[string]:
 		return NewConstant[string](string(reversedBytes)), nil
 	case *Constant[[]byte]:
 		return NewConstant[[]byte](reversedBytes), nil
 	default:
 		// This case should not be reached if AsBytes succeeds, but as a fallback.
-		if modified {
-			return NewFunction(f.Name, args), nil
-		}
-		return f, nil
+		return unevaluated(f, args, modified), nil
 	}
 }
 

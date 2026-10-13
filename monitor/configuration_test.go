@@ -181,7 +181,7 @@ func TestConfigHashCacheInvalidated(t *testing.T) {
 func BenchmarkConfigHashCold(b *testing.B) {
 	c := monitor.NewConfig()
 	for i := 0; i < 100; i++ {
-		c.AddFact(newFFact(term.NewConstant("v"), term.NewConstant(i)))
+		c.AddFact(newFFact(term.NewConstant("v"), term.NewConstant(int64(i))))
 	}
 	// Warm one fact so we can re-add it cheaply.
 	probe := newFFact(term.NewConstant("probe"))
@@ -200,7 +200,7 @@ func BenchmarkConfigHashCold(b *testing.B) {
 func BenchmarkConfigHashHot(b *testing.B) {
 	c := monitor.NewConfig()
 	for i := 0; i < 100; i++ {
-		c.AddFact(newFFact(term.NewConstant("v"), term.NewConstant(i)))
+		c.AddFact(newFFact(term.NewConstant("v"), term.NewConstant(int64(i))))
 	}
 	_ = c.Hash() // warm cache
 	b.ResetTimer()
@@ -361,8 +361,8 @@ func TestConfigStringDeterministic(t *testing.T) {
 
 func TestApplyRuleEvaluatesButDoesNotStoreInternalRHSFacts(t *testing.T) {
 	addition := term.NewFunction(term.AddFunctionName, []term.Term{
-		term.NewConstant(1),
-		term.NewConstant(2),
+		term.NewConstant[int64](1),
+		term.NewConstant[int64](2),
 	})
 	r := &rule.Rule{
 		Name: "InternalRHS",
@@ -386,7 +386,7 @@ func TestApplyRuleEvaluatesButDoesNotStoreInternalRHSFacts(t *testing.T) {
 	}
 
 	publicFacts := result.FactsAsSliceWithName("ST_Public")
-	if len(publicFacts) != 1 || len(publicFacts[0].Args) != 1 || !publicFacts[0].Args[0].Equal(term.NewConstant(3)) {
+	if len(publicFacts) != 1 || len(publicFacts[0].Args) != 1 || !publicFacts[0].Args[0].Equal(term.NewConstant[int64](3)) {
 		t.Fatalf("ordinary RHS evaluation changed: %v", publicFacts)
 	}
 }
@@ -396,7 +396,7 @@ func TestApplyRuleReturnsEvaluationErrorsBeforePublishing(t *testing.T) {
 
 	const existingFactName = "Existing"
 
-	invalid := term.NewFunction(term.AddFunctionName, []term.Term{term.NewConstant(1)})
+	invalid := term.NewFunction(term.AddFunctionName, []term.Term{term.NewConstant[int64](1)})
 	for _, test := range []struct {
 		name string
 		act  []*rule.Fact

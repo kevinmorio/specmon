@@ -19,11 +19,35 @@
 package monitor
 
 import (
+	"math"
+	"strconv"
 	"testing"
 
 	"github.com/specmon/specmon/rule"
 	"github.com/specmon/specmon/term"
 )
+
+func TestFormatFieldLengthChecksStructuralBounds(t *testing.T) {
+	t.Parallel()
+
+	field := term.NewFunction(string(term.FormatIntType), []term.Term{
+		term.NewVariable("x"),
+		term.NewConstant[int64](math.MaxInt64),
+	})
+	length, known, variable := formatFieldLength(field)
+	if strconv.IntSize == 32 {
+		if known || variable {
+			t.Fatalf("32-bit structural length accepted: %d", length)
+		}
+	} else if !known || variable || int64(length) != math.MaxInt64 {
+		t.Fatalf("64-bit structural length = %d, %t, %t", length, known, variable)
+	}
+
+	cat := term.NewFunction(term.CatFunctionName, []term.Term{field, field})
+	if _, ok := formatConstraintForCat(cat); ok {
+		t.Fatal("combined field lengths overflowed the structural total")
+	}
+}
 
 // bindTargets returns, for every binding in the set, the term that variable v
 // is bound to (skipping bindings that do not bind v). Used to assert which
@@ -48,9 +72,9 @@ func TestConflictSetTermsSingleBareVariable(t *testing.T) {
 	body := []term.Term{x}
 
 	seen := []term.Term{
-		term.NewFunction("recv", []term.Term{term.NewConstant(1), term.NewConstant(2)}),
+		term.NewFunction("recv", []term.Term{term.NewConstant[int64](1), term.NewConstant[int64](2)}),
 		term.NewConstant("c"),
-		term.NewFunction("send", []term.Term{term.NewConstant(7)}),
+		term.NewFunction("send", []term.Term{term.NewConstant[int64](7)}),
 	}
 
 	got := conflictSetTerms(seen, body)
@@ -69,7 +93,7 @@ func TestConflictSetTermsSingleBareVariable(t *testing.T) {
 func TestConflictSetTermsSingleConstant(t *testing.T) {
 	// cat(int(5)) is a ground, unevaluated function that Unify evaluates.
 	catTerm := term.NewFunction("cat", []term.Term{
-		term.NewFunction("int", []term.Term{term.NewConstant(5)}),
+		term.NewFunction("int", []term.Term{term.NewConstant[int64](5)}),
 	})
 	// The constant that cat(int(5)) evaluates to.
 	evaluated, err := term.Evaluate(catTerm)
@@ -94,9 +118,9 @@ func TestConflictSetTermsSingleIndexedFunction(t *testing.T) {
 	body := []term.Term{term.NewFunction("recv", []term.Term{y})}
 
 	seen := []term.Term{
-		term.NewFunction("recv", []term.Term{term.NewConstant(1)}),
-		term.NewFunction("send", []term.Term{term.NewConstant(2)}),                      // wrong name
-		term.NewFunction("recv", []term.Term{term.NewConstant(3), term.NewConstant(4)}), // wrong arity
+		term.NewFunction("recv", []term.Term{term.NewConstant[int64](1)}),
+		term.NewFunction("send", []term.Term{term.NewConstant[int64](2)}),                             // wrong name
+		term.NewFunction("recv", []term.Term{term.NewConstant[int64](3), term.NewConstant[int64](4)}), // wrong arity
 	}
 
 	got := conflictSetTerms(seen, body)

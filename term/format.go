@@ -1,4 +1,4 @@
-// Copyright (C) 2025 CISPA Helmholtz Center for Information Security
+// Copyright (C) 2025-2026 CISPA Helmholtz Center for Information Security
 // Author: Kevin Morio <kevin.morio@cispa.de>
 //
 // This file is part of SpecMon.
@@ -21,6 +21,7 @@ package term
 import (
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/specmon/specmon/utils"
 )
@@ -85,7 +86,7 @@ func ParseFormat(fields []*Function, s []byte) (*Binding, error) {
 		}
 
 		// Check if the bitstring is long enough to contain the field.
-		if n+length > len(s) {
+		if length > len(s)-n {
 			return nil, ErrSliceTooShort
 		}
 
@@ -104,7 +105,7 @@ func ParseFormat(fields []*Function, s []byte) (*Binding, error) {
 			}
 
 			b.Set(t, c)
-		case *Constant[int], *Constant[[]byte], *Constant[string]:
+		case *Constant[int64], *Constant[[]byte], *Constant[string]:
 			if !t.Equal(c) {
 				return nil, ErrConstantsNoMatch
 			}
@@ -129,7 +130,7 @@ func BytesToConstant[T ConstantConstraint](s []byte) (*Constant[T], error) {
 	var result T
 
 	switch v := any(&result).(type) {
-	case *int:
+	case *int64:
 		i, err := utils.BytesToInt(s, internalByteOrder())
 		if err != nil {
 			return nil, fmt.Errorf("cannot convert %s to int: %w", s, err)
@@ -161,26 +162,39 @@ func FormatToBytes(fields []*Function, b *Binding) ([]byte, error) {
 
 		var err error
 		var value []byte
+		width := int64(8)
+		if len(g.Args) == 2 {
+			width, err = AsInt(g.Args[1])
+			if err != nil {
+				return nil, errors.New("invalid length specifier")
+			}
+		} else if len(g.Args) != 1 {
+			return nil, ErrFieldLength
+		}
 
 		switch FormatType(g.Name) {
-		case FormatIntType, FormatByteType:
+		case FormatIntType:
+			value, err = encodeIntegerField(g.Args[0], width)
+			if err != nil {
+				return nil, err
+			}
+		case FormatByteType:
 			value, err = AsBytes(g.Args[0])
 			if err != nil {
-				// return nil, fmt.Errorf("cannot convert %s to bytes: %w", g.Args[0], err)
 				return nil, errors.New("cannot convert to bytes")
 			}
 		case FormatStringType:
-			value = []byte(Must(AsConstant[string](g.Args[0])).Value)
+			stringValue, err := AsConstant[string](g.Args[0])
+			if err != nil {
+				return nil, ErrInvalidType
+			}
+			value = []byte(stringValue.Value)
+		default:
+			return nil, ErrInvalidFormatFunction
 		}
 
-		if len(g.Args) == 2 {
-			length, err := AsInt(g.Args[1])
-			if err != nil {
-				// return nil, fmt.Errorf("invalid length specifier %s: %w", g.Args[1], err)
-				return nil, errors.New("invalid length specifier")
-			}
-			if length != len(value) {
-				// return nil, fmt.Errorf("length specifier %d does not match actual length %d", length, len(value))
+		if FormatType(g.Name) != FormatIntType && len(g.Args) == 2 {
+			if width != int64(len(value)) {
 				return nil, errors.New("length specifier does not match actual length")
 			}
 		}
@@ -191,8 +205,24 @@ func FormatToBytes(fields []*Function, b *Binding) ([]byte, error) {
 	return result, nil
 }
 
+func encodeIntegerField(value Term, width int64) ([]byte, error) {
+	if width < 0 || width > 8 {
+		return nil, ErrFieldLength
+	}
+
+	integer, err := AsInt(value)
+	if err != nil || integer < 0 || width < 8 && integer >= int64(1)<<(8*width) {
+		return nil, ErrIntConversion
+	}
+
+	encoded := utils.IntToBytes(integer, internalByteOrder())
+	return encoded[:int(width)], nil
+}
+
 // getFieldLength returns the length of the field specified by f.
-// If the field contains a variable, -1 is returned.
+// An int field without a length takes eight bytes, as it does when it is
+// constructed. Another field without a length whose value is a variable
+// returns -1.
 func getFieldLength(f *Function) (int, error) {
 	var length int
 
@@ -204,10 +234,18 @@ func getFieldLength(f *Function) (int, error) {
 			return length, ErrFieldLength
 		}
 
-		return b, nil
+		if b < 0 || b > math.MaxInt {
+			return 0, ErrFieldLength
+		}
+
+		return int(b), nil
 	}
 
 	// Field contains no length specifier.
+	if FormatType(f.Name) == FormatIntType {
+		return 8, nil
+	}
+
 	// Try to convert the field to a byte slice and report its length.
 	if b, err := AsBytes(f.Args[0]); err == nil {
 		return len(b), nil
@@ -226,7 +264,7 @@ func getFieldLength(f *Function) (int, error) {
 func FormatTypeToConstant(t FormatType, s []byte) (Term, error) {
 	switch t {
 	case FormatIntType:
-		return BytesToConstant[int](s)
+		return BytesToConstant[int64](s)
 	case FormatByteType:
 		return BytesToConstant[[]byte](s)
 	case FormatStringType:

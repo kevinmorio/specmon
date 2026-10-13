@@ -19,7 +19,9 @@
 package term_test
 
 import (
+	"bytes"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/specmon/specmon/term"
@@ -29,16 +31,16 @@ func TestCompatible(t *testing.T) {
 	t.Parallel()
 
 	b1 := term.BindingFromMap(map[term.Term]term.Term{
-		term.NewVariable("x"): term.NewConstant(1),
-		term.NewVariable("y"): term.NewConstant(2),
+		term.NewVariable("x"): term.NewConstant[int64](1),
+		term.NewVariable("y"): term.NewConstant[int64](2),
 	})
 	b2 := term.BindingFromMap(map[term.Term]term.Term{
-		term.NewVariable("y"): term.NewConstant(2),
-		term.NewVariable("z"): term.NewConstant(3),
+		term.NewVariable("y"): term.NewConstant[int64](2),
+		term.NewVariable("z"): term.NewConstant[int64](3),
 	})
 	b3 := term.BindingFromMap(map[term.Term]term.Term{
-		term.NewVariable("y"): term.NewConstant(3),
-		term.NewVariable("z"): term.NewConstant(3),
+		term.NewVariable("y"): term.NewConstant[int64](3),
+		term.NewVariable("z"): term.NewConstant[int64](3),
 	})
 
 	if !b1.Compatible(b2) || !b2.Compatible(b1) {
@@ -54,19 +56,19 @@ func TestMerge(t *testing.T) {
 	t.Parallel()
 
 	b1 := term.BindingFromMap(map[term.Term]term.Term{
-		term.NewVariable("x"): term.NewConstant(1),
-		term.NewVariable("y"): term.NewConstant(2),
+		term.NewVariable("x"): term.NewConstant[int64](1),
+		term.NewVariable("y"): term.NewConstant[int64](2),
 	})
 	b2 := term.BindingFromMap(map[term.Term]term.Term{
-		term.NewVariable("a"): term.NewConstant(3),
-		term.NewVariable("b"): term.NewConstant(4),
+		term.NewVariable("a"): term.NewConstant[int64](3),
+		term.NewVariable("b"): term.NewConstant[int64](4),
 	})
 
 	expect := term.BindingFromMap(map[term.Term]term.Term{
-		term.NewVariable("x"): term.NewConstant(1),
-		term.NewVariable("y"): term.NewConstant(2),
-		term.NewVariable("a"): term.NewConstant(3),
-		term.NewVariable("b"): term.NewConstant(4),
+		term.NewVariable("x"): term.NewConstant[int64](1),
+		term.NewVariable("y"): term.NewConstant[int64](2),
+		term.NewVariable("a"): term.NewConstant[int64](3),
+		term.NewVariable("b"): term.NewConstant[int64](4),
 	})
 
 	if got := b1.Extend(b2); !expect.Equal(got) {
@@ -88,19 +90,19 @@ func TestUnify(t *testing.T) {
 		{
 			// unify(x, 1) | [ x -> 1 ]
 			term.NewVariable("x"),
-			term.NewConstant[int](1),
+			term.NewConstant[int64](1),
 			term.BindingFromMap(map[term.Term]term.Term{
-				term.NewVariable("x"): term.NewConstant(1),
+				term.NewVariable("x"): term.NewConstant[int64](1),
 			}),
 			false,
 		},
 		{
 			// unify(f(1, x), f(y, 2)) | [ x -> 2, y -> 1 ]
-			term.NewFunction("f", []term.Term{term.NewConstant[int](1), term.NewVariable("x")}),
-			term.NewFunction("f", []term.Term{term.NewVariable("y"), term.NewConstant[int](2)}),
+			term.NewFunction("f", []term.Term{term.NewConstant[int64](1), term.NewVariable("x")}),
+			term.NewFunction("f", []term.Term{term.NewVariable("y"), term.NewConstant[int64](2)}),
 			term.BindingFromMap(map[term.Term]term.Term{
-				term.NewVariable("x"): term.NewConstant(2),
-				term.NewVariable("y"): term.NewConstant[int](1),
+				term.NewVariable("x"): term.NewConstant[int64](2),
+				term.NewVariable("y"): term.NewConstant[int64](1),
 			}),
 			false,
 		},
@@ -116,14 +118,14 @@ func TestUnify(t *testing.T) {
 		},
 		{
 			// unify(cat(int(11)), 0x0b00000000000000) | [ ]
-			term.NewFunction("cat", []term.Term{term.NewFunction("int", []term.Term{term.NewConstant[int](11)})}),
+			term.NewFunction("cat", []term.Term{term.NewFunction("int", []term.Term{term.NewConstant[int64](11)})}),
 			term.NewConstant[[]byte]([]byte{0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}),
 			term.NewBinding(),
 			false,
 		},
 		{
 			// unify(cat(int(11)), 0x0b00000000000000) | [ ]
-			term.NewFunction("cat", []term.Term{term.NewFunction("int", []term.Term{term.NewConstant[int](11)})}),
+			term.NewFunction("cat", []term.Term{term.NewFunction("int", []term.Term{term.NewConstant[int64](11)})}),
 			term.NewConstant[[]byte]([]byte{0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}),
 			term.NewBinding(),
 			false,
@@ -133,7 +135,7 @@ func TestUnify(t *testing.T) {
 			term.NewFunction("cat", []term.Term{
 				term.NewFunction("int", []term.Term{
 					term.NewVariable("length"),
-					term.NewConstant[int](1),
+					term.NewConstant[int64](1),
 				}),
 				term.NewFunction("int", []term.Term{
 					term.NewVariable("a"),
@@ -146,8 +148,8 @@ func TestUnify(t *testing.T) {
 			}),
 			term.NewConstant[[]byte]([]byte{0x02, 0x03, 0x00, 0x04, 0x00}),
 			term.BindingFromMap(map[term.Term]term.Term{
-				term.NewVariable("length"): term.NewConstant[int](2),
-				term.NewVariable("a"):      term.NewConstant[int](3),
+				term.NewVariable("length"): term.NewConstant[int64](2),
+				term.NewVariable("a"):      term.NewConstant[int64](3),
 				term.NewVariable("b"):      term.NewConstant[[]byte]([]byte{0x04, 0x00}),
 			}),
 			false,
@@ -158,7 +160,7 @@ func TestUnify(t *testing.T) {
 				term.NewConstant[string]("Out"),
 				term.NewFunction("pair", []term.Term{
 					term.NewConstant[[]byte]([]byte{0xde, 0xad, 0xba, 0xbe}),
-					term.NewConstant[int](40),
+					term.NewConstant[int64](40),
 				}),
 				term.NewFunction("pair", []term.Term{}),
 			}),
@@ -198,8 +200,8 @@ func TestUnify(t *testing.T) {
 func TestUnifyReturnsEvaluationErrors(t *testing.T) {
 	t.Parallel()
 
-	invalid := term.NewFunction(term.AddFunctionName, []term.Term{term.NewConstant(1)})
-	_, err := invalid.Unify(term.NewConstant(1))
+	invalid := term.NewFunction(term.AddFunctionName, []term.Term{term.NewConstant[int64](1)})
+	_, err := invalid.Unify(term.NewConstant[int64](1))
 	if !errors.Is(err, term.ErrEvaluation) {
 		t.Fatalf("Unify error = %v, want ErrEvaluation", err)
 	}
@@ -211,7 +213,7 @@ func TestUnifyReturnsEvaluationErrors(t *testing.T) {
 func TestReplaceFormatsReturnsEvaluationErrors(t *testing.T) {
 	t.Parallel()
 
-	invalid := term.NewFunction(term.AddFunctionName, []term.Term{term.NewConstant(1)})
+	invalid := term.NewFunction(term.AddFunctionName, []term.Term{term.NewConstant[int64](1)})
 	_, err := term.ReplaceFormats(invalid)
 	if !errors.Is(err, term.ErrEvaluation) {
 		t.Fatalf("ReplaceFormats error = %v, want ErrEvaluation", err)
@@ -222,7 +224,7 @@ func TestReplaceFormatsReturnsEvaluationErrors(t *testing.T) {
 
 	partial := term.NewFunction(term.AddFunctionName, []term.Term{
 		term.NewVariable("x"),
-		term.NewConstant(1),
+		term.NewConstant[int64](1),
 	})
 	got, err := term.ReplaceFormats(partial)
 	if err != nil {
@@ -245,8 +247,8 @@ func TestEvaluate(t *testing.T) {
 	evaluateTests := []evaluateTest{
 		{
 			// evaluate('1') | '1'
-			term.NewConstant[int](1),
-			term.NewConstant[int](1),
+			term.NewConstant[int64](1),
+			term.NewConstant[int64](1),
 			false,
 		},
 		{
@@ -258,21 +260,21 @@ func TestEvaluate(t *testing.T) {
 		{
 			// evaluate(add('1', '1')) | '2'
 			term.NewFunction(term.AddFunctionName, []term.Term{
-				term.NewConstant[int](1),
-				term.NewConstant[int](1),
+				term.NewConstant[int64](1),
+				term.NewConstant[int64](1),
 			}),
-			term.NewConstant[int](2),
+			term.NewConstant[int64](2),
 			false,
 		},
 		{
 			// evaluate(add('x', '1')) | add('x', '2')
 			term.NewFunction(term.AddFunctionName, []term.Term{
 				term.NewVariable("x"),
-				term.NewConstant[int](1),
+				term.NewConstant[int64](1),
 			}),
 			term.NewFunction(term.AddFunctionName, []term.Term{
 				term.NewVariable("x"),
-				term.NewConstant[int](1),
+				term.NewConstant[int64](1),
 			}),
 			false,
 		},
@@ -280,16 +282,16 @@ func TestEvaluate(t *testing.T) {
 			// evaluate(add(add('1', '2'), '1')) | '4'
 			term.NewFunction(term.AddFunctionName, []term.Term{
 				term.NewFunction(term.AddFunctionName, []term.Term{
-					term.NewConstant[int](1),
-					term.NewConstant[int](2),
+					term.NewConstant[int64](1),
+					term.NewConstant[int64](2),
 				}),
-				term.NewConstant[int](1),
+				term.NewConstant[int64](1),
 			}),
-			term.NewConstant[int](4),
+			term.NewConstant[int64](4),
 			false,
 		},
 		{
-			// evaluate(add(cat(byte('0x01'), byte('0x00'))), '1') | 0x0100 + 1 = 0x0200
+			// evaluate(add(cat(byte('0x01'), byte('0x00'))), '1') | 1 + 1 = 2
 			term.NewFunction(term.AddFunctionName, []term.Term{
 				term.NewFunction(term.CatFunctionName, []term.Term{
 					term.NewFunction(string(term.FormatByteType), []term.Term{
@@ -299,16 +301,16 @@ func TestEvaluate(t *testing.T) {
 						term.NewConstant[[]byte]([]byte{0x00}),
 					}),
 				}),
-				term.NewConstant[int](1),
+				term.NewConstant[int64](1),
 			}),
-			term.NewConstant[[]byte]([]byte{0x02, 0x00}),
+			term.NewConstant[int64](2),
 			false,
 		},
 		{
 			// evaluate(and('0xf3', 248)) | 0xf0
 			term.NewFunction(term.AndFunctionName, []term.Term{
 				term.NewConstant[[]byte]([]byte{0xf3}),
-				term.NewConstant[int](248),
+				term.NewConstant[int64](248),
 			}),
 			term.NewConstant[[]byte]([]byte{0xf0}),
 			false,
@@ -316,10 +318,10 @@ func TestEvaluate(t *testing.T) {
 		{
 			// evaluate(and(243, 248)) | 243
 			term.NewFunction(term.AndFunctionName, []term.Term{
-				term.NewConstant[int](243),
-				term.NewConstant[int](248),
+				term.NewConstant[int64](243),
+				term.NewConstant[int64](248),
 			}),
-			term.NewConstant[int](240),
+			term.NewConstant[int64](240),
 			false,
 		},
 		{
@@ -327,9 +329,9 @@ func TestEvaluate(t *testing.T) {
 			term.NewFunction(term.OrFunctionName, []term.Term{
 				term.NewFunction(term.AndFunctionName, []term.Term{
 					term.NewConstant[[]byte]([]byte{0x30}),
-					term.NewConstant[int](127),
+					term.NewConstant[int64](127),
 				}),
-				term.NewConstant[int](64),
+				term.NewConstant[int64](64),
 			}),
 			term.NewConstant[[]byte]([]byte{0x70}),
 			false,
@@ -340,7 +342,7 @@ func TestEvaluate(t *testing.T) {
 				term.NewFunction(string(term.FormatByteType), []term.Term{
 					term.NewFunction(term.AndFunctionName, []term.Term{
 						term.NewConstant[[]byte]([]byte{0xf3}),
-						term.NewConstant[int](248),
+						term.NewConstant[int64](248),
 					}),
 				}),
 				term.NewFunction(string(term.FormatByteType), []term.Term{
@@ -352,9 +354,9 @@ func TestEvaluate(t *testing.T) {
 					term.NewFunction(term.OrFunctionName, []term.Term{
 						term.NewFunction(term.AndFunctionName, []term.Term{
 							term.NewConstant[[]byte]([]byte{0x30}),
-							term.NewConstant[int](127),
+							term.NewConstant[int64](127),
 						}),
-						term.NewConstant[int](64),
+						term.NewConstant[int64](64),
 					}),
 				}),
 			}),
@@ -406,6 +408,90 @@ func TestEvaluate(t *testing.T) {
 	}
 }
 
+func TestEvaluateCheckedAddition(t *testing.T) {
+	t.Parallel()
+
+	add := func(left, right term.Term) term.Term {
+		return term.NewFunction(term.AddFunctionName, []term.Term{left, right})
+	}
+	for _, test := range []struct {
+		name  string
+		left  term.Term
+		right term.Term
+		want  int64
+	}{
+		{"zero", term.NewConstant[int64](0), term.NewConstant[int64](0), 0},
+		{"ordinary", term.NewConstant[int64](40), term.NewConstant[int64](2), 42},
+		{"mixed byte widths", term.NewConstant([]byte{0xff}), term.NewConstant([]byte{0x01, 0x00}), 256},
+		{"maximum", term.NewConstant[int64](math.MaxInt64), term.NewConstant[int64](0), math.MaxInt64},
+		{"nested left", add(term.NewConstant[int64](math.MaxInt64-2), term.NewConstant[int64](1)), term.NewConstant[int64](1), math.MaxInt64},
+		{"nested right", term.NewConstant[int64](math.MaxInt64 - 2), add(term.NewConstant[int64](1), term.NewConstant[int64](1)), math.MaxInt64},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := term.Evaluate(add(test.left, test.right))
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			constant, err := term.AsConstant[int64](got)
+			if err != nil || constant.Value != test.want {
+				t.Fatalf("Evaluate = %v, %v; want numeric %d", got, err, test.want)
+			}
+		})
+	}
+
+	for _, invalid := range []term.Term{
+		add(term.NewConstant[int64](-1), term.NewConstant[int64](1)),
+		add(term.NewConstant[int64](1), term.NewConstant[int64](-1)),
+		add(term.NewConstant[int64](math.MaxInt64), term.NewConstant[int64](1)),
+		add(add(term.NewConstant[int64](math.MaxInt64-1), term.NewConstant[int64](1)), term.NewConstant[int64](1)),
+		add(term.NewConstant[int64](math.MaxInt64-1), add(term.NewConstant[int64](1), term.NewConstant[int64](1))),
+		add(term.NewConstant([]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80}), term.NewConstant[int64](0)),
+		add(term.NewConstant("1"), term.NewConstant[int64](1)),
+	} {
+		if _, err := term.Evaluate(invalid); !errors.Is(err, term.ErrEvaluation) {
+			t.Errorf("Evaluate(%s) error = %v; want ErrEvaluation", invalid, err)
+		}
+	}
+}
+
+func TestEvaluateSliceSignedBoundaries(t *testing.T) {
+	t.Parallel()
+
+	data := term.NewConstant([]byte{0x00, 0x01, 0x02, 0x03})
+	tests := []struct {
+		name  string
+		start int64
+		end   int64
+		want  []byte
+	}{
+		{"positive indexes", 1, 3, []byte{0x01, 0x02}},
+		{"negative indexes", -3, -1, []byte{0x01, 0x02}},
+		{"zero end", -2, 0, []byte{0x02, 0x03}},
+		{"minimum start clamps", math.MinInt64, math.MaxInt64, []byte{0x00, 0x01, 0x02, 0x03}},
+		{"maximum start clamps", math.MaxInt64, 0, []byte{}},
+		{"minimum end clamps", 0, math.MinInt64, []byte{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			expression := term.NewFunction(term.SliceFunctionName, []term.Term{
+				data,
+				term.NewConstant(test.start),
+				term.NewConstant(test.end),
+			})
+			got, err := term.Evaluate(expression)
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			constant, err := term.AsConstant[[]byte](got)
+			if err != nil || !bytes.Equal(constant.Value, test.want) {
+				t.Fatalf("Evaluate = %v, %v; want %x", got, err, test.want)
+			}
+		})
+	}
+}
+
 // Vars walks f(a, g(b, a), c) and returns variables in left-to-right
 // order with duplicates preserved. Pin this so the prealloc rewrite
 // can't silently reorder.
@@ -438,7 +524,7 @@ func TestVarCountAndIsGround(t *testing.T) {
 
 	a := term.NewVariable("a")
 	b := term.NewVariable("b")
-	c1 := term.NewConstant(1)
+	c1 := term.NewConstant[int64](1)
 
 	ground := term.NewFunction("h", []term.Term{c1, c1})
 	open := term.NewFunction("f", []term.Term{a, term.NewFunction("g", []term.Term{b, a}), c1})
@@ -470,7 +556,7 @@ func TestSubstBindingFastPath(t *testing.T) {
 	x := term.NewVariable("x")
 	y := term.NewVariable("y")
 	z := term.NewVariable("z")
-	one := term.NewConstant(1)
+	one := term.NewConstant[int64](1)
 
 	t.Run("empty binding returns g unchanged", func(t *testing.T) {
 		t.Parallel()

@@ -1,4 +1,4 @@
-// Copyright (C) 2025 CISPA Helmholtz Center for Information Security
+// Copyright (C) 2025-2026 CISPA Helmholtz Center for Information Security
 // Author: Kevin Morio <kevin.morio@cispa.de>
 //
 // This file is part of SpecMon.
@@ -53,13 +53,13 @@ func TestBytesToConstant(t *testing.T) {
 		{
 			"0x01",
 			term.FormatIntType,
-			term.NewConstant[int](1),
+			term.NewConstant[int64](1),
 			false,
 		},
 		{
 			"0x66",
 			term.FormatIntType,
-			term.NewConstant[int](102),
+			term.NewConstant[int64](102),
 			false,
 		},
 		{
@@ -121,7 +121,7 @@ func TestFormatToBytes(t *testing.T) {
 			[]term.Function{
 				*term.NewFunction("int", []term.Term{
 					term.NewVariable("size"),
-					term.NewConstant[int](8),
+					term.NewConstant[int64](8),
 				}),
 				*term.NewFunction("byte", []term.Term{
 					term.NewConstant[[]byte]([]byte{0x01}),
@@ -135,7 +135,7 @@ func TestFormatToBytes(t *testing.T) {
 				}),
 			},
 			term.BindingFromMap(map[term.Term]term.Term{
-				term.NewVariable("size"):    term.NewConstant[int](11),
+				term.NewVariable("size"):    term.NewConstant[int64](11),
 				term.NewVariable("payload"): term.NewConstant[[]byte]([]byte{0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77, 0x6f, 0x72, 0x6c, 0x64}),
 				term.NewVariable("hmac"):    term.NewConstant[[]byte]([]byte{0x1a, 0x5a, 0x91, 0x3b, 0x60, 0xbd, 0xe6, 0x81, 0x8f, 0x86, 0xb5, 0xa2, 0xf6, 0xa4, 0x4d, 0x50, 0xc4, 0xc5, 0x6f, 0x83}),
 			}),
@@ -252,7 +252,7 @@ func TestParseFormat(t *testing.T) {
 			[]term.Function{
 				*term.NewFunction("int", []term.Term{
 					term.NewVariable("size"),
-					term.NewConstant[int](8),
+					term.NewConstant[int64](8),
 				}),
 				*term.NewFunction("byte", []term.Term{
 					term.NewConstant[[]byte]([]byte{0x01}),
@@ -266,7 +266,7 @@ func TestParseFormat(t *testing.T) {
 				}),
 			},
 			term.BindingFromMap(map[term.Term]term.Term{
-				term.NewVariable("size"):    term.NewConstant[int](11),
+				term.NewVariable("size"):    term.NewConstant[int64](11),
 				term.NewVariable("payload"): term.NewConstant[[]byte]([]byte{0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77, 0x6f, 0x72, 0x6c, 0x64}),
 				term.NewVariable("hmac"):    term.NewConstant[[]byte]([]byte{0x1a, 0x5a, 0x91, 0x3b, 0x60, 0xbd, 0xe6, 0x81, 0x8f, 0x86, 0xb5, 0xa2, 0xf6, 0xa4, 0x4d, 0x50, 0xc4, 0xc5, 0x6f, 0x83}),
 			}),
@@ -325,7 +325,7 @@ func TestFormatToBytes(t *testing.T) {
 			[]term.Function{
 				*term.NewFunction("int", []term.Term{
 					term.NewVariable("size"),
-					term.NewConstant[int](8),
+					term.NewConstant[int64](8),
 				}),
 				*term.NewFunction("byte", []term.Term{
 					term.NewConstant[[]byte]([]byte{0x01}),
@@ -339,7 +339,7 @@ func TestFormatToBytes(t *testing.T) {
 				}),
 			},
 			term.BindingFromMap(map[term.Term]term.Term{
-				term.NewVariable("size"):    term.NewConstant[int](11),
+				term.NewVariable("size"):    term.NewConstant[int64](11),
 				term.NewVariable("payload"): term.NewConstant[[]byte]([]byte{0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77, 0x6f, 0x72, 0x6c, 0x64}),
 				term.NewVariable("hmac"):    term.NewConstant[[]byte]([]byte{0x1a, 0x5a, 0x91, 0x3b, 0x60, 0xbd, 0xe6, 0x81, 0x8f, 0x86, 0xb5, 0xa2, 0xf6, 0xa4, 0x4d, 0x50, 0xc4, 0xc5, 0x6f, 0x83}),
 			}),
@@ -456,7 +456,7 @@ func TestParseFormat(t *testing.T) {
 			[]term.Function{
 				*term.NewFunction("int", []term.Term{
 					term.NewVariable("size"),
-					term.NewConstant[int](8),
+					term.NewConstant[int64](8),
 				}),
 				*term.NewFunction("byte", []term.Term{
 					term.NewConstant[[]byte]([]byte{0x01}),
@@ -470,7 +470,7 @@ func TestParseFormat(t *testing.T) {
 				}),
 			},
 			term.BindingFromMap(map[term.Term]term.Term{
-				term.NewVariable("size"):    term.NewConstant[int](11),
+				term.NewVariable("size"):    term.NewConstant[int64](11),
 				term.NewVariable("payload"): term.NewConstant[[]byte]([]byte{0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77, 0x6f, 0x72, 0x6c, 0x64}),
 				term.NewVariable("hmac"):    term.NewConstant[[]byte]([]byte{0x1a, 0x5a, 0x91, 0x3b, 0x60, 0xbd, 0xe6, 0x81, 0x8f, 0x86, 0xb5, 0xa2, 0xf6, 0xa4, 0x4d, 0x50, 0xc4, 0xc5, 0x6f, 0x83}),
 			}),
@@ -529,7 +529,7 @@ func TestFormatToBytes(t *testing.T) {
 			[]term.Function{
 				*term.NewFunction("int", []term.Term{
 					term.NewVariable("size"),
-					term.NewConstant[int](8),
+					term.NewConstant[int64](8),
 				}),
 				*term.NewFunction("byte", []term.Term{
 					term.NewConstant[[]byte]([]byte{0x01}),
@@ -543,7 +543,7 @@ func TestFormatToBytes(t *testing.T) {
 				}),
 			},
 			term.BindingFromMap(map[term.Term]term.Term{
-				term.NewVariable("size"):    term.NewConstant[int](11),
+				term.NewVariable("size"):    term.NewConstant[int64](11),
 				term.NewVariable("payload"): term.NewConstant[[]byte]([]byte{0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77, 0x6f, 0x72, 0x6c, 0x64}),
 				term.NewVariable("hmac"):    term.NewConstant[[]byte]([]byte{0x1a, 0x5a, 0x91, 0x3b, 0x60, 0xbd, 0xe6, 0x81, 0x8f, 0x86, 0xb5, 0xa2, 0xf6, 0xa4, 0x4d, 0x50, 0xc4, 0xc5, 0x6f, 0x83}),
 			}),
@@ -605,11 +605,11 @@ func TestFormatLengthConstraint(t *testing.T) {
 	pattern := term.NewFunction("cat", []term.Term{
 		term.NewFunction("byte", []term.Term{
 			term.NewVariable("x"),
-			term.NewConstant[int](2),
+			term.NewConstant[int64](2),
 		}),
 		term.NewFunction("byte", []term.Term{
 			term.NewVariable("y"),
-			term.NewConstant[int](3),
+			term.NewConstant[int64](3),
 		}),
 	})
 
@@ -655,11 +655,11 @@ func TestFormatLengthConstraint(t *testing.T) {
 		pattern1 := term.NewFunction("cat", []term.Term{
 			term.NewFunction("byte", []term.Term{
 				term.NewVariable("a"),
-				term.NewConstant[int](2),
+				term.NewConstant[int64](2),
 			}),
 			term.NewFunction("byte", []term.Term{
 				term.NewVariable("b"),
-				term.NewConstant[int](3),
+				term.NewConstant[int64](3),
 			}),
 		})
 
@@ -667,11 +667,11 @@ func TestFormatLengthConstraint(t *testing.T) {
 		pattern2 := term.NewFunction("cat", []term.Term{
 			term.NewFunction("byte", []term.Term{
 				term.NewVariable("a"),
-				term.NewConstant[int](2),
+				term.NewConstant[int64](2),
 			}),
 			term.NewFunction("byte", []term.Term{
 				term.NewVariable("b"),
-				term.NewConstant[int](5),
+				term.NewConstant[int64](5),
 			}),
 		})
 

@@ -36,18 +36,60 @@ Arguments can be constants or nested function calls:
 
 ### Constants
 
-Concrete values like keys, messages, or bytes:
+Every constant emitted by SpecMon carries a `const_kind` that fixes its value
+type. Integers use a canonical decimal string so values across the full signed
+64 bit range remain exact:
 
 ```json
 {
-  "value": "0x1234abcd",
-  "type": "constant"
+  "type": "constant",
+  "const_kind": "int",
+  "value": "9007199254740993"
 }
 ```
 
-- Hex strings (starting with `0x`) represent byte arrays
-- Plain strings represent text values
-- Integers can be JSON numbers or strings (go-annotate emits strings)
+Strings retain their literal value; invalid UTF-8 is replaced by U+FFFD, both
+when a string is decoded and when it is written:
+
+```json
+{
+  "type": "constant",
+  "const_kind": "string",
+  "value": "9007199254740993"
+}
+```
+
+Bytes use a lowercase `0x` prefix and hexadecimal output:
+
+```json
+{
+  "type": "constant",
+  "const_kind": "bytes",
+  "value": "0x1234abcd"
+}
+```
+
+Empty bytes use `"0x"`. Nil bytes use an explicit JSON `null`, which is
+distinct from an empty byte string in the encoding; when terms are compared,
+nil and empty bytes are equal.
+
+Typed integer input accepts either the canonical decimal string or a bare JSON
+integer with the same canonical spelling. Fractions, exponents, leading zeroes,
+`-0`, and values outside the signed 64 bit range are rejected. Typed byte input
+requires a lowercase `0x` prefix and an even number of hexadecimal digits. The
+digits may use either case on input and are lowercase on output.
+
+### Legacy input
+
+Input without `const_kind` remains accepted where its meaning is unambiguous.
+Bare JSON integers are decoded exactly; numbers with a fraction or an exponent
+are rejected. Strings remain strings unless they have
+a lowercase `0x` prefix followed by an even number of valid hexadecimal digits.
+A missing or null legacy value means nil bytes. A numeric string remains a
+string and is never inferred to be an integer.
+
+SpecMon always emits the typed representation. This includes JSON output from
+`specmon rewrite` and the structured event in a violation hook payload.
 
 ### Functions
 
@@ -58,10 +100,15 @@ Nested function calls with their own arguments:
   "name": "hash",
   "type": "function",
   "args": [
-    {"value": "0x6d657373616765", "type": "constant"}
+    {"type": "constant", "const_kind": "bytes", "value": "0x6d657373616765"}
   ]
 }
 ```
+
+A function without arguments may be written with `"args": []`, with
+`"args": null` or without `args`; all three decode to the same term. On output,
+a function decoded from JSON has `"args": []`, whichever form its input had,
+and one that a rule built has `"args": null`.
 
 ## Common event patterns
 
@@ -80,16 +127,16 @@ Most events represent a function call paired with its return value using the `pa
         "name": "hash",
         "type": "function",
         "args": [
-          {"value": "0x68656c6c6f", "type": "constant"}
+          {"type": "constant", "const_kind": "bytes", "value": "0x68656c6c6f"}
         ]
       },
-      {"value": "0x2cf24dba...", "type": "constant"}
+      {"type": "constant", "const_kind": "bytes", "value": "0x2cf24dba"}
     ]
   }
 }
 ```
 
-This represents: `hash("hello") = 0x2cf24dba...`
+This represents a hash call with a byte result.
 
 The `pair` structure is: `<function_call, return_value>`
 
@@ -131,11 +178,11 @@ Pre-trace events establish facts (like long-term keys) before monitoring begins.
 ## Requirements
 
 1. **Use line-delimited JSON**: One JSON object per line (lines starting with `//` are ignored)
-2. **Use hex encoding for bytes**: Prefix with `0x` for binary data
-3. **Pair function calls with results**: Use the `pair` wrapper consistently
-4. **Include timestamps**: Allow per-event timing analysis
-5. **Match specification names**: Event function names should match rule triggers
-6. **Handle encoding consistently**: Use the same encoding throughout
+2. **Declare constant kinds**: Use `int`, `string`, or `bytes` in `const_kind`
+3. **Use hex encoding for bytes**: Prefix byte values with lowercase `0x`
+4. **Pair function calls with results**: Use the `pair` wrapper consistently
+5. **Include timestamps**: Allow per-event timing analysis
+6. **Match specification names**: Event function names should match rule triggers
 
 ## Debugging events
 
@@ -166,8 +213,9 @@ This shows each event as it's processed and which rules fire.
 - Check for clock skew in distributed systems
 
 **Encoding problems:**
-- Use `0x` prefix for hex-encoded bytes
-- Ensure consistent string encoding (UTF-8)
+- Include `const_kind` in generated events
+- Use a lowercase `0x` prefix and an even number of hexadecimal digits for bytes
+- Keep integer values inside the signed 64 bit range
 
 ## Next steps
 

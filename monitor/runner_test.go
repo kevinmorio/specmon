@@ -110,6 +110,21 @@ func runnerEventLine(t *testing.T, event *term.Function) []byte {
 	return append(b, '\n')
 }
 
+func TestParseEventsKeepsTypedIntegersExact(t *testing.T) {
+	t.Parallel()
+
+	input := `{"time":1,"event":{"name":"outer","type":"function","args":[` +
+		`{"type":"constant","const_kind":"int","value":"9007199254740993"}]}}` + "\n"
+	events, terminal := monitor.ParseEvents(context.Background(), strings.NewReader(input))
+	event := <-events
+	if err := <-terminal; err != nil || event == nil {
+		t.Fatalf("ParseEvents = %v, %v", event, err)
+	}
+	if got, err := term.AsInt(event.Event.Args[0]); err != nil || got != 9007199254740993 {
+		t.Fatalf("typed integer = %v, %v", got, err)
+	}
+}
+
 func acceptingRunnerMonitor(t *testing.T) *monitor.Monitor {
 	t.Helper()
 	r := &rule.Rule{
@@ -285,7 +300,7 @@ func TestRunCallbackErrorClosesBlockingInput(t *testing.T) {
 	t.Parallel()
 
 	wantErr := errors.New("consumed callback failed")
-	reader := newBlockingReader(runnerEventLine(t, runnerEvent(runnerInputEventName, term.NewConstant(1))))
+	reader := newBlockingReader(runnerEventLine(t, runnerEvent(runnerInputEventName, term.NewConstant[int64](1))))
 	violation, err := acceptingRunnerMonitor(t).Run(context.Background(), reader, func(term.Term) error {
 		return wantErr
 	})
@@ -349,7 +364,7 @@ func (r *stuckReader) Close() error {
 func TestRunReportsViolationWhileReadBlocks(t *testing.T) {
 	t.Parallel()
 
-	reader := newStuckReader(t, runnerEventLine(t, runnerEvent(runnerOutputEventName, term.NewConstant(1))))
+	reader := newStuckReader(t, runnerEventLine(t, runnerEvent(runnerOutputEventName, term.NewConstant[int64](1))))
 	type result struct {
 		violation *monitor.ViolationInfo
 		err       error
@@ -375,9 +390,9 @@ func TestRunReportsViolationBeforeLaterParseError(t *testing.T) {
 	for _, accepted := range []int{0, 10, 200, 2000} {
 		var input strings.Builder
 		for i := range accepted {
-			input.Write(runnerEventLine(t, runnerEvent(runnerInputEventName, term.NewConstant(i))))
+			input.Write(runnerEventLine(t, runnerEvent(runnerInputEventName, term.NewConstant(int64(i)))))
 		}
-		input.Write(runnerEventLine(t, runnerEvent(runnerOutputEventName, term.NewConstant(1))))
+		input.Write(runnerEventLine(t, runnerEvent(runnerOutputEventName, term.NewConstant[int64](1))))
 		input.WriteString("{\"time\": 1, \"event\": \n")
 		violation, err := acceptingRunnerMonitor(t).Run(context.Background(), io.NopCloser(strings.NewReader(input.String())), nil)
 		if violation == nil || err != nil || violation.EventIndex != accepted+1 {
@@ -397,7 +412,7 @@ func TestRunPreservesStatsAndClassifiesAcceptedHintViolations(t *testing.T) {
 		hintRuleName   = "RunnerHint"
 	)
 	setupEvent := runnerEvent(setupEventName, term.NewFunction(term.PairFunctionName, nil))
-	hintEvent := runnerEvent(hintEventName, term.NewConstant(1))
+	hintEvent := runnerEvent(hintEventName, term.NewConstant[int64](1))
 	setupRule := &rule.Rule{
 		Name: setupRuleName,
 		RHS:  []*rule.Fact{rule.NewFact(stateFactName, nil, rule.LinearFact)},
@@ -447,7 +462,7 @@ func TestRewriteCallbackErrorClosesBlockingInput(t *testing.T) {
 
 	wantErr := errors.New("output callback failed")
 	m := rewritingRunnerMonitor(t)
-	reader := newBlockingReader(runnerEventLine(t, runnerEvent(runnerInputEventName, term.NewConstant(1))))
+	reader := newBlockingReader(runnerEventLine(t, runnerEvent(runnerInputEventName, term.NewConstant[int64](1))))
 	err := m.Rewrite(context.Background(), reader, func(*monitor.TimedEvent) error {
 		return wantErr
 	})
@@ -463,7 +478,7 @@ func TestRewriteViolationNamesEvent(t *testing.T) {
 	t.Parallel()
 
 	rejected := runnerEvent(runnerOutputEventName, term.NewFunction(term.PairFunctionName, nil))
-	input := append(runnerEventLine(t, runnerEvent(runnerInputEventName, term.NewConstant(1))), runnerEventLine(t, rejected)...)
+	input := append(runnerEventLine(t, runnerEvent(runnerInputEventName, term.NewConstant[int64](1))), runnerEventLine(t, rejected)...)
 	err := rewritingRunnerMonitor(t).Rewrite(context.Background(), io.NopCloser(strings.NewReader(string(input))), nil)
 	want := "rewrite violation at event 2: no applicable rule found " + rejected.String()
 	if !errors.Is(err, monitor.ErrNoApplicableRule) || err.Error() != want {
@@ -511,7 +526,7 @@ func TestRunPipelineSettlesAfterDownstreamViolation(t *testing.T) {
 		t.Fatalf("NewMonitor main: %v", err)
 	}
 
-	line := runnerEventLine(t, runnerEvent(runnerInputEventName, term.NewConstant(1)))
+	line := runnerEventLine(t, runnerEvent(runnerInputEventName, term.NewConstant[int64](1)))
 	reader := &closeTrackingReader{Reader: strings.NewReader(strings.Repeat(string(line), eventCount))}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

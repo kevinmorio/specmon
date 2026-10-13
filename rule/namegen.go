@@ -77,7 +77,7 @@ func (g *NameGenerator) NameForTerm(t term.Term) string {
 	switch v := t.(type) {
 	case *term.Variable:
 		return sanitizeName(v.Name)
-	case *term.Constant[int], *term.Constant[string], *term.Constant[[]byte]:
+	case *term.Constant[int64], *term.Constant[string], *term.Constant[[]byte]:
 		return sanitizeName(t.String())
 	case *term.Function:
 		return g.structuralName(v)

@@ -47,18 +47,18 @@ func TestBinding(t *testing.T) {
 	t.Parallel()
 
 	b1 := term.BindingFromMap(map[term.Term]term.Term{
-		term.NewVariable("x"): term.NewConstant(1),
-		term.NewVariable("y"): term.NewConstant(2),
+		term.NewVariable("x"): term.NewConstant[int64](1),
+		term.NewVariable("y"): term.NewConstant[int64](2),
 	})
 
 	b2 := term.BindingFromMap(map[term.Term]term.Term{
-		term.NewVariable("y"): term.NewConstant(2),
-		term.NewVariable("x"): term.NewConstant(1),
+		term.NewVariable("y"): term.NewConstant[int64](2),
+		term.NewVariable("x"): term.NewConstant[int64](1),
 	})
 
 	b3 := term.BindingFromMap(map[term.Term]term.Term{
-		term.NewVariable("y"): term.NewConstant(3),
-		term.NewVariable("x"): term.NewConstant(1),
+		term.NewVariable("y"): term.NewConstant[int64](3),
+		term.NewVariable("x"): term.NewConstant[int64](1),
 	})
 
 	var B []*term.Binding
@@ -76,18 +76,18 @@ func TestBindingHashSet(t *testing.T) {
 
 	b := []*term.Binding{
 		term.BindingFromMap(map[term.Term]term.Term{
-			term.NewVariable("x"): term.NewConstant(1),
-			term.NewVariable("y"): term.NewConstant(2),
+			term.NewVariable("x"): term.NewConstant[int64](1),
+			term.NewVariable("y"): term.NewConstant[int64](2),
 		}),
 
 		term.BindingFromMap(map[term.Term]term.Term{
-			term.NewVariable("y"): term.NewConstant(2),
-			term.NewVariable("x"): term.NewConstant(1),
+			term.NewVariable("y"): term.NewConstant[int64](2),
+			term.NewVariable("x"): term.NewConstant[int64](1),
 		}),
 
 		term.BindingFromMap(map[term.Term]term.Term{
-			term.NewVariable("y"): term.NewConstant(3),
-			term.NewVariable("x"): term.NewConstant(1),
+			term.NewVariable("y"): term.NewConstant[int64](3),
+			term.NewVariable("x"): term.NewConstant[int64](1),
 		}),
 	}
 

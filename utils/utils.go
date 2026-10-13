@@ -19,16 +19,15 @@
 package utils
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
-	"unsafe"
 )
 
 // Indent indents a string by n spaces.
@@ -87,32 +86,26 @@ func Unique[F fmt.Stringer](vals []F) []F {
 	return result
 }
 
-// BytesToInt converts a byte slice to an int using the specified byte order.
+// BytesToInt converts an unsigned byte magnitude to an int64.
 // An empty byte slice is converted to 0.
-func BytesToInt(b []byte, order binary.ByteOrder) (int, error) {
-	// Ensure that the byte slice is not longer than the size of an int.
-	if len(b) > int(unsafe.Sizeof(int(0))) {
-		return 0, fmt.Errorf("byte slice too long to convert to int: %d", len(b))
+func BytesToInt(b []byte, order binary.ByteOrder) (int64, error) {
+	if len(b) > 8 {
+		return 0, fmt.Errorf("byte slice too long to convert to int64: %d", len(b))
 	}
 
-	// Ensure that the byte slice is padded to the size of an int.
-	padded := PadWithByteOrder(b, order, int(unsafe.Sizeof(int(0))))
-	r := bytes.NewReader(padded)
-
-	var value int64
-	if err := binary.Read(r, order, &value); err != nil {
-		return 0, fmt.Errorf("cannot convert bytes to int: %w", err)
+	padded := PadWithByteOrder(b, order, 8)
+	value := order.Uint64(padded)
+	if value > math.MaxInt64 {
+		return 0, fmt.Errorf("byte magnitude exceeds int64: %d", value)
 	}
 
-	return int(value), nil
+	return int64(value), nil
 }
 
-// IntToBytes converts an integer to a byte slice using the specified byte order.
-func IntToBytes(i int, order binary.ByteOrder) []byte {
+// IntToBytes encodes an int64 as its deterministic two's-complement bit pattern.
+func IntToBytes(i int64, order binary.ByteOrder) []byte {
 	var buf [8]byte
-	// Convert the int to uint64 explicitly using int64 to handle negative values correctly.
-	//nolint:gosec
-	order.PutUint64(buf[:], uint64(int64(i)))
+	order.PutUint64(buf[:], uint64(i)) //nolint:gosec // Preserve the two's-complement bit pattern.
 
 	return buf[:]
 }

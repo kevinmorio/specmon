@@ -37,7 +37,7 @@ func TestBindingHAMTLargeInsertGet(t *testing.T) {
 	b := term.NewBinding()
 	const N = 512
 	for i := 0; i < N; i++ {
-		b.Set(term.NewVariable(fmt.Sprintf("v%d", i)), term.NewConstant(i))
+		b.Set(term.NewVariable(fmt.Sprintf("v%d", i)), term.NewConstant(int64(i)))
 	}
 	if b.Size() != N {
 		t.Fatalf("Size: got %d, want %d", b.Size(), N)
@@ -48,12 +48,12 @@ func TestBindingHAMTLargeInsertGet(t *testing.T) {
 			t.Errorf("Get(v%d): miss", i)
 			continue
 		}
-		c, err := term.AsConstant[int](v)
+		c, err := term.AsConstant[int64](v)
 		if err != nil {
 			t.Errorf("Get(v%d) returned non-int constant: %v", i, v)
 			continue
 		}
-		if c.Value != i {
+		if c.Value != int64(i) {
 			t.Errorf("Get(v%d) = %d, want %d", i, c.Value, i)
 		}
 	}
@@ -64,16 +64,16 @@ func TestBindingHAMTLargeInsertGet(t *testing.T) {
 func TestBindingHAMTOverwriteSameKey(t *testing.T) {
 	b := term.NewBinding()
 	x := term.NewVariable("x")
-	b.Set(x, term.NewConstant(1))
+	b.Set(x, term.NewConstant[int64](1))
 	if b.Size() != 1 {
 		t.Fatalf("Size after first Set: got %d, want 1", b.Size())
 	}
-	b.Set(x, term.NewConstant(2))
+	b.Set(x, term.NewConstant[int64](2))
 	if b.Size() != 1 {
 		t.Fatalf("Size after overwrite: got %d, want 1", b.Size())
 	}
 	v, _ := b.Get(x)
-	c, _ := term.AsConstant[int](v)
+	c, _ := term.AsConstant[int64](v)
 	if c.Value != 2 {
 		t.Errorf("Get after overwrite: got %d, want 2", c.Value)
 	}
@@ -85,7 +85,7 @@ func TestBindingHAMTRemove(t *testing.T) {
 	b := term.NewBinding()
 	const N = 64
 	for i := 0; i < N; i++ {
-		b.Set(term.NewVariable(fmt.Sprintf("v%d", i)), term.NewConstant(i))
+		b.Set(term.NewVariable(fmt.Sprintf("v%d", i)), term.NewConstant(int64(i)))
 	}
 	// Remove every odd entry.
 	for i := 1; i < N; i += 2 {
@@ -113,7 +113,7 @@ func TestBindingHAMTRemove(t *testing.T) {
 func TestBindingHAMTCloneIndependence(t *testing.T) {
 	src := term.NewBinding()
 	for i := 0; i < 16; i++ {
-		src.Set(term.NewVariable(fmt.Sprintf("v%d", i)), term.NewConstant(i))
+		src.Set(term.NewVariable(fmt.Sprintf("v%d", i)), term.NewConstant(int64(i)))
 	}
 	srcSize := src.Size()
 
@@ -124,8 +124,8 @@ func TestBindingHAMTCloneIndependence(t *testing.T) {
 
 	// Mutate the clone: add a new key, overwrite an existing key,
 	// remove an existing key.
-	clone.Set(term.NewVariable("new"), term.NewConstant(999))
-	clone.Set(term.NewVariable("v0"), term.NewConstant(-1))
+	clone.Set(term.NewVariable("new"), term.NewConstant[int64](999))
+	clone.Set(term.NewVariable("v0"), term.NewConstant[int64](-1))
 	clone.Remove(term.NewVariable("v5"))
 
 	if src.Size() != srcSize {
@@ -135,7 +135,7 @@ func TestBindingHAMTCloneIndependence(t *testing.T) {
 		t.Errorf("clone's new key leaked to source")
 	}
 	v0, _ := src.Get(term.NewVariable("v0"))
-	c0, _ := term.AsConstant[int](v0)
+	c0, _ := term.AsConstant[int64](v0)
 	if c0.Value != 0 {
 		t.Errorf("source v0 changed: got %d, want 0", c0.Value)
 	}
@@ -150,15 +150,15 @@ func TestBindingHAMTCloneIndependence(t *testing.T) {
 func TestBindingHAMTIterateAll(t *testing.T) {
 	b := term.NewBinding()
 	const N = 100
-	want := map[string]int{}
+	want := map[string]int64{}
 	for i := 0; i < N; i++ {
 		name := fmt.Sprintf("v%d", i)
-		b.Set(term.NewVariable(name), term.NewConstant(i))
-		want[name] = i
+		b.Set(term.NewVariable(name), term.NewConstant(int64(i)))
+		want[name] = int64(i)
 	}
-	got := map[string]int{}
+	got := map[string]int64{}
 	b.Iterate(func(k, v term.Term) bool {
-		c, _ := term.AsConstant[int](v)
+		c, _ := term.AsConstant[int64](v)
 		got[k.String()] = c.Value
 		return true
 	})
@@ -178,7 +178,7 @@ func TestBindingHAMTEmptyAfterAllRemoved(t *testing.T) {
 	b := term.NewBinding()
 	const N = 32
 	for i := 0; i < N; i++ {
-		b.Set(term.NewVariable(fmt.Sprintf("v%d", i)), term.NewConstant(i))
+		b.Set(term.NewVariable(fmt.Sprintf("v%d", i)), term.NewConstant(int64(i)))
 	}
 	for i := 0; i < N; i++ {
 		b.Remove(term.NewVariable(fmt.Sprintf("v%d", i)))
