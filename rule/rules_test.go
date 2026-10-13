@@ -184,9 +184,9 @@ func TestRulesDropUnusedRHSFacts(t *testing.T) {
 func TestFactUnifyPreservesEvaluationErrors(t *testing.T) {
 	t.Parallel()
 
-	invalid := term.NewFunction(term.AddFunctionName, []term.Term{term.NewConstant(1)})
+	invalid := term.NewFunction(term.AddFunctionName, []term.Term{term.NewConstant[int64](1)})
 	left := rule.NewFact("Evaluated", []term.Term{invalid}, rule.LinearFact)
-	right := rule.NewFact("Evaluated", []term.Term{term.NewConstant(1)}, rule.LinearFact)
+	right := rule.NewFact("Evaluated", []term.Term{term.NewConstant[int64](1)}, rule.LinearFact)
 
 	_, err := left.Unify(right)
 	if !errors.Is(err, rule.ErrFactUnify) {

@@ -109,7 +109,7 @@ Formats data as raw bytes.
 **Usage notes:**
 - Length can be omitted when constructing messages from known values
 - Length is required for pattern matching/parsing when the byte field is not the final field
-- When length is specified, data will be truncated or zero-padded to fit
+- When length is specified, the data must have exactly that many bytes; otherwise constructing the message fails
 
 #### `int(data, [length])`
 
@@ -120,9 +120,9 @@ Formats integers with specified byte length.
 - `length` (optional) — Number of bytes for the integer representation
 
 **Usage notes:**
-- Length can be omitted when constructing messages from known values
-- Length is required for pattern matching/parsing when the int field is not the final field
-- When length is specified, integers are represented in little-endian format
+- Integers are unsigned and little-endian; a length is at most eight bytes, and the value must fit into it
+- Without a length, an integer takes eight bytes, when it is constructed and when it is parsed, also as the final
+  field of a `cat`
 
 #### `string(data, [length])`
 
@@ -135,16 +135,22 @@ Formats string data as UTF-8 bytes.
 **Usage notes:**
 - Length can be omitted when constructing messages from known values
 - Length is required for pattern matching/parsing when the string field is not the final field
-- When length is specified, strings will be truncated or null-padded to fit
+- When length is specified, the UTF-8 encoding of the string must have exactly that many bytes; otherwise
+  constructing the message fails
 
 ## Arithmetic functions
 
 ### `add(a, b)`
 
-Performs integer addition.
+Performs natural-number addition.
 
 **Parameters:**
-- `a`, `b` — Integer values (constants or variables)
+- `a`, `b` — Non-negative integers, or byte strings of at most eight bytes, which are read as unsigned integers
+
+**Usage notes:**
+- The result is an integer, whatever the kinds of the operands
+- An addition that overflows the signed 64-bit range is an evaluation error
+- `add` is evaluated once its operands are known; it is not used to parse values
 
 **Example:**
 ```tamarin

@@ -1,4 +1,4 @@
-// Copyright (C) 2025 CISPA Helmholtz Center for Information Security
+// Copyright (C) 2025-2026 CISPA Helmholtz Center for Information Security
 // Author: Kevin Morio <kevin.morio@cispa.de>
 //
 // This file is part of SpecMon.
@@ -49,11 +49,11 @@ func TestFormatLengthConflict(t *testing.T) {
 	shortPattern := []*term.Function{
 		term.Must(term.AsFunction(term.NewFunction("byte", []term.Term{
 			term.NewVariable("x"),
-			term.NewConstant[int](2),
+			term.NewConstant[int64](2),
 		}))),
 		term.Must(term.AsFunction(term.NewFunction("byte", []term.Term{
 			term.NewVariable("y"),
-			term.NewConstant[int](3),
+			term.NewConstant[int64](3),
 		}))),
 	}
 
@@ -61,11 +61,11 @@ func TestFormatLengthConflict(t *testing.T) {
 	longPattern := []*term.Function{
 		term.Must(term.AsFunction(term.NewFunction("byte", []term.Term{
 			term.NewVariable("x"),
-			term.NewConstant[int](2),
+			term.NewConstant[int64](2),
 		}))),
 		term.Must(term.AsFunction(term.NewFunction("byte", []term.Term{
 			term.NewVariable("y"),
-			term.NewConstant[int](5),
+			term.NewConstant[int64](5),
 		}))),
 	}
 
@@ -111,11 +111,11 @@ func TestFormatLengthConflict_ShortData(t *testing.T) {
 	longPattern := []*term.Function{
 		term.Must(term.AsFunction(term.NewFunction("byte", []term.Term{
 			term.NewVariable("x"),
-			term.NewConstant[int](2),
+			term.NewConstant[int64](2),
 		}))),
 		term.Must(term.AsFunction(term.NewFunction("byte", []term.Term{
 			term.NewVariable("y"),
-			term.NewConstant[int](5),
+			term.NewConstant[int64](5),
 		}))),
 	}
 
@@ -136,11 +136,11 @@ func TestFormatExactMatch(t *testing.T) {
 	pattern := []*term.Function{
 		term.Must(term.AsFunction(term.NewFunction("byte", []term.Term{
 			term.NewVariable("x"),
-			term.NewConstant[int](3),
+			term.NewConstant[int64](3),
 		}))),
 		term.Must(term.AsFunction(term.NewFunction("byte", []term.Term{
 			term.NewVariable("y"),
-			term.NewConstant[int](2),
+			term.NewConstant[int64](2),
 		}))),
 	}
 

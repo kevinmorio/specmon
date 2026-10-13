@@ -23,6 +23,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/specmon/specmon/utils"
@@ -57,6 +58,20 @@ func TestIndent(t *testing.T) {
 		output := utils.Indent(test.input, test.n)
 		if output != test.expected {
 			t.Errorf("Incorrect indentation for input:\n%s\nExpected:\n%s\nGot:\n%s\n", test.input, test.expected, output)
+		}
+	}
+}
+
+func TestBytesToIntRejectsOutOfRangeMagnitudes(t *testing.T) {
+	t.Parallel()
+
+	maximum := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f}
+	if got, err := utils.BytesToInt(maximum, binary.LittleEndian); err != nil || got != math.MaxInt64 {
+		t.Fatalf("BytesToInt(MaxInt64) = %d, %v", got, err)
+	}
+	for _, input := range [][]byte{{0, 0, 0, 0, 0, 0, 0, 0x80}, make([]byte, 9)} {
+		if _, err := utils.BytesToInt(input, binary.LittleEndian); err == nil {
+			t.Fatalf("BytesToInt(%x) succeeded", input)
 		}
 	}
 }
@@ -153,7 +168,7 @@ func TestBytesToInt(t *testing.T) {
 	tests := []struct {
 		input    []byte
 		order    binary.ByteOrder
-		expected int
+		expected int64
 		err      error
 	}{
 		{
@@ -215,13 +230,37 @@ func TestBytesToInt(t *testing.T) {
 			t.Errorf("Incorrect error for input:\n%v\nExpected:\n%v\nGot:\n%v\n", test.input, test.err, err)
 		}
 	}
+
+	for width := 0; width <= 8; width++ {
+		bigEndian := make([]byte, width)
+		littleEndian := make([]byte, width)
+		var expected int64
+		if width > 0 {
+			bigEndian[0] = 1
+			littleEndian[width-1] = 1
+			expected = int64(1) << (8 * (width - 1))
+		}
+
+		for _, test := range []struct {
+			input []byte
+			order binary.ByteOrder
+		}{
+			{bigEndian, binary.BigEndian},
+			{littleEndian, binary.LittleEndian},
+		} {
+			got, err := utils.BytesToInt(test.input, test.order)
+			if err != nil || got != expected {
+				t.Errorf("width %d: BytesToInt(%x) = %d, %v; want %d", width, test.input, got, err, expected)
+			}
+		}
+	}
 }
 
 func TestIntToBytes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		input    int
+		input    int64
 		order    binary.ByteOrder
 		expected []byte
 		err      error
@@ -260,6 +299,18 @@ func TestIntToBytes(t *testing.T) {
 			input:    1,
 			order:    binary.LittleEndian,
 			expected: []byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+			err:      nil,
+		},
+		{
+			input:    -1,
+			order:    binary.BigEndian,
+			expected: []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
+			err:      nil,
+		},
+		{
+			input:    math.MinInt64,
+			order:    binary.LittleEndian,
+			expected: []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80},
 			err:      nil,
 		},
 	}

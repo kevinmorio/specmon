@@ -1,4 +1,4 @@
-// Copyright (C) 2025 CISPA Helmholtz Center for Information Security
+// Copyright (C) 2025-2026 CISPA Helmholtz Center for Information Security
 // Author: Kevin Morio <kevin.morio@cispa.de>
 //
 // This file is part of SpecMon.
@@ -89,7 +89,7 @@ func TestMatchBytestring(t *testing.T) {
 		},
 
 		// Match with binding
-		{term.Binding{*term.NewVariable("a"): term.NewConstant(4)}, "0x01020304", "0x01020304:a", term.NewBinding(), false},
+		{term.Binding{*term.NewVariable("a"): term.NewConstant[int64](4)}, "0x01020304", "0x01020304:a", term.NewBinding(), false},
 
 		// Match with integers
 		{make(term.Binding), "0xff00ff", "255:1|0:1|255:1", term.NewBinding(), false},

@@ -126,11 +126,36 @@ printf 'hook stderr\n' >&2
 	if gotPayload.Time == nil || *gotPayload.Time != 123456789 || gotPayload.Event == nil {
 		t.Fatalf("hook payload event = %#v", gotPayload)
 	}
-	if gotPayload.EventTerm == "" || gotPayload.SpecPath != "model.spthy" || gotPayload.Role != "client" {
+	if gotPayload.EventTerm != violationHookTestEventName+"('value')" ||
+		gotPayload.SpecPath != "model.spthy" || gotPayload.Role != "client" {
 		t.Fatalf("hook payload context = %#v", gotPayload)
 	}
 	if gotPayload.PID != 1234 || gotPayload.RewriteWith != "rewrite.spthy" || gotPayload.Stats.Received != 7 {
 		t.Fatalf("hook payload optional fields = %#v", gotPayload)
+	}
+	var wirePayload struct {
+		SchemaVersion string `json:"schema_version"`
+		Event         struct {
+			Args []struct {
+				ConstKind string `json:"const_kind"`
+				Value     string `json:"value"`
+			} `json:"args"`
+		} `json:"event"`
+	}
+	payloadBytes, err := os.ReadFile(payloadPath)
+	if err != nil {
+		t.Fatalf("read hook payload: %v", err)
+	}
+	if err := json.Unmarshal(payloadBytes, &wirePayload); err != nil {
+		t.Fatalf("unmarshal hook wire payload: %v", err)
+	}
+	if wirePayload.SchemaVersion != "1" {
+		t.Fatalf("hook schema version = %q, want 1", wirePayload.SchemaVersion)
+	}
+	if len(wirePayload.Event.Args) != 1 ||
+		wirePayload.Event.Args[0].ConstKind != term.StringConstantKind ||
+		wirePayload.Event.Args[0].Value != "value" {
+		t.Fatalf("hook typed event = %#v", wirePayload.Event)
 	}
 
 	environmentBytes, err := os.ReadFile(environmentPath)

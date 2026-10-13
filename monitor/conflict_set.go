@@ -19,6 +19,7 @@
 package monitor
 
 import (
+	"math"
 	"sort"
 
 	log "github.com/sirupsen/logrus"
@@ -200,6 +201,9 @@ func formatConstraintForCat(fn *term.Function) (formatConstraint, bool) {
 		length, known, variable := formatFieldLength(fieldFn)
 		switch {
 		case known && length >= 0:
+			if length > math.MaxInt-total {
+				return formatConstraint{}, false
+			}
 			total += length
 		case variable:
 			if i != len(fn.Args)-1 {
@@ -219,7 +223,10 @@ func formatFieldLength(field *term.Function) (int, bool, bool) {
 		if err != nil || length < 0 {
 			return 0, false, false
 		}
-		return length, true, false
+		if length > math.MaxInt {
+			return 0, false, false
+		}
+		return int(length), true, false
 	}
 	if len(field.Args) != 1 {
 		return 0, false, false
@@ -235,7 +242,7 @@ func formatFieldLength(field *term.Function) (int, bool, bool) {
 
 func constantByteLen(t term.Term) (int, bool) {
 	switch c := t.(type) {
-	case *term.Constant[int]:
+	case *term.Constant[int64]:
 		return 8, true
 	case *term.Constant[string]:
 		return len(c.Value), true

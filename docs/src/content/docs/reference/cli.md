@@ -226,9 +226,15 @@ and hook stderr are forwarded to SpecMon stderr. Payload schema version 1 is:
   "event": {
     "name": "input",
     "type": "function",
-    "args": []
+    "args": [
+      {
+        "type": "constant",
+        "const_kind": "int",
+        "value": "9007199254740993"
+      }
+    ]
   },
-  "event_term": "input()",
+  "event_term": "input(9007199254740993)",
   "spec_path": "model.spthy",
   "role": "client",
   "pid": 1234,
@@ -252,7 +258,7 @@ consumed but not emitted by the rewriter do not count. `time` is the original
 event timestamp in nanoseconds. Every duration in `stats` is also measured in
 nanoseconds. Optional `role`, `pid`, and `rewrite_with` fields are omitted when
 they are not configured. `event_term` provides a stable readable form of the
-event alongside the version 1 JSON event representation.
+event alongside the version 2 typed JSON event representation.
 
 The hook environment inherits the SpecMon environment and replaces these
 values for the current violation:
@@ -349,10 +355,19 @@ SpecMon accepts event streams in JSON format with the following structure:
     "type": "function",
     "args": [
       {
-        "name": "parameter_name",
-        "type": "function|constant",
-        "args": [...],
-        "value": "0x..."
+        "type": "constant",
+        "const_kind": "int",
+        "value": "9007199254740993"
+      },
+      {
+        "type": "constant",
+        "const_kind": "string",
+        "value": "text"
+      },
+      {
+        "type": "constant",
+        "const_kind": "bytes",
+        "value": "0x0102"
       }
     ]
   }
@@ -360,6 +375,11 @@ SpecMon accepts event streams in JSON format with the following structure:
 ```
 
 Events are read as line-delimited JSON (one event per line). Lines starting with `//` are ignored.
+Typed integer strings preserve the full signed 64 bit range. Empty bytes use
+`"0x"`, while nil bytes use JSON `null`. Legacy constants without `const_kind`
+remain accepted when their type is unambiguous, but SpecMon emits only the
+typed representation. JSON output from `specmon rewrite` uses this same format
+recursively for every constant.
 
 ### Input sources
 
@@ -386,6 +406,7 @@ Events are read as line-delimited JSON (one event per line). Lines starting with
 **Rewrite output (`--out file.log`)**:
 - Writes rewritten events to the specified file
 - Overwrites the file if it already exists
+- Uses canonical typed constants when `--json` is enabled
 
 ## Role selection
 

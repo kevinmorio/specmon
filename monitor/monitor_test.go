@@ -831,10 +831,10 @@ func TestProcessEventHandlesInvalidEvaluatedCandidates(t *testing.T) {
 			value,
 		})
 	}
-	invalidArgument := term.NewFunction(term.AddFunctionName, []term.Term{term.NewConstant(1)})
+	invalidArgument := term.NewFunction(term.AddFunctionName, []term.Term{term.NewConstant[int64](1)})
 	invalidCandidate := pairEvent(eventFunctionName, invalidArgument)
 	validCandidate := pairEvent(eventFunctionName, term.NewVariable("value"))
-	event := pairEvent(eventFunctionName, term.NewConstant(2))
+	event := pairEvent(eventFunctionName, term.NewConstant[int64](2))
 	setupEvent := pairEvent(setupFunctionName, term.NewFunction(term.PairFunctionName, nil))
 
 	for _, attributeName := range []string{rule.TriggerAttributeName, rule.HintAttributeName} {
@@ -920,7 +920,7 @@ func TestProcessEventReturnsEpsilonEvaluationErrors(t *testing.T) {
 			rule.TriggerAttributeName: rule.TermAttribute{Value: []term.Term{event}},
 		},
 	}
-	invalid := term.NewFunction(term.AddFunctionName, []term.Term{term.NewConstant(1)})
+	invalid := term.NewFunction(term.AddFunctionName, []term.Term{term.NewConstant[int64](1)})
 	epsilonRule := &rule.Rule{
 		Name: epsilonRuleName,
 		RHS: []*rule.Fact{
@@ -944,5 +944,75 @@ func TestProcessEventReturnsEpsilonEvaluationErrors(t *testing.T) {
 		if config.CountByName(invalidFactName) != 0 {
 			t.Fatalf("ProcessEvent published an invalid epsilon result: %v", config.Facts())
 		}
+	}
+}
+
+// TestFinalIntFieldWithoutWidthTakesEightBytes checks that a trigger and a
+// premise whose last field is an int without a width match only eight bytes
+// there, the width with which the matched instance is rebuilt.
+func TestFinalIntFieldWithoutWidthTakesEightBytes(t *testing.T) {
+	t.Parallel()
+
+	call := func(name string, args ...term.Term) *term.Function { return term.NewFunction(name, args) }
+	event := func(name string, result term.Term) *term.Function {
+		return call(term.PairFunctionName, call(name), result)
+	}
+	triggered := func(r *rule.Rule, trigger *term.Function) *rule.Rule {
+		r.Attrs = map[string]rule.Attribute{rule.TriggerAttributeName: rule.TermAttribute{Value: []term.Term{trigger}}}
+		return r
+	}
+	x, a := term.NewVariable("x"), term.NewVariable("a")
+	pattern := call(term.CatFunctionName,
+		call(string(term.FormatByteType), x, term.NewConstant[int64](1)),
+		call(string(term.FormatIntType), a))
+	empty := call(term.PairFunctionName)
+	for _, test := range []struct {
+		name    string
+		value   []byte
+		wantErr error
+	}{
+		{"eight bytes", []byte{1, 5, 0, 0, 0, 0, 0, 0, 0}, nil},
+		{"one byte", []byte{1, 5}, monitor.ErrNoApplicableRule},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			value := term.NewConstant(test.value)
+			rules := []*rule.Rule{
+				triggered(&rule.Rule{Name: "ParseTrigger", RHS: []*rule.Fact{rule.NewFact("Parsed", []term.Term{a}, rule.LinearFact)}},
+					event("finalIntInput", pattern)),
+				triggered(&rule.Rule{Name: "Store", RHS: []*rule.Fact{rule.NewFact("Stored", []term.Term{value}, rule.LinearFact)}},
+					event("finalIntStore", empty)),
+				triggered(&rule.Rule{
+					Name: "ParsePremise",
+					LHS:  []*rule.Fact{rule.NewFact("Stored", []term.Term{pattern}, rule.LinearFact)},
+					RHS:  []*rule.Fact{rule.NewFact("Parsed", []term.Term{a}, rule.LinearFact)},
+				}, event("finalIntUse", empty)),
+			}
+			for _, events := range [][]*term.Function{
+				{event("finalIntInput", value)},
+				{event("finalIntStore", empty), event("finalIntUse", empty)},
+			} {
+				m, err := monitor.NewMonitor(rules)
+				if err != nil {
+					t.Fatalf("NewMonitor: %v", err)
+				}
+				for _, e := range events[:len(events)-1] {
+					if _, err := m.ProcessEvent(e); err != nil {
+						t.Fatalf("ProcessEvent(%s): %v", e, err)
+					}
+				}
+				last := events[len(events)-1]
+				_, err = m.ProcessEvent(last)
+				if test.wantErr != nil {
+					if !errors.Is(err, test.wantErr) {
+						t.Fatalf("ProcessEvent(%s) error = %v, want %v", last, err, test.wantErr)
+					}
+					continue
+				}
+				if configs := m.Configs(); err != nil || len(configs) != 1 || configs[0].CountByName("Parsed") != 1 {
+					t.Fatalf("ProcessEvent(%s) = %v, configurations %v", last, err, configs)
+				}
+			}
+		})
 	}
 }

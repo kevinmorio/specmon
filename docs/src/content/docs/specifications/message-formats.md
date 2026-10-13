@@ -76,7 +76,8 @@ macros:
 
 ### Variable-length fields
 
-The **last field** in a format string can omit the length to consume remaining bytes:
+The **last field** in a format string can omit the length to consume remaining bytes. An `int` field without a
+length is the exception: it always takes eight bytes, also as the last field:
 
 ```tamarin
 macros:

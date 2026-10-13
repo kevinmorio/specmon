@@ -939,7 +939,7 @@ func cloneTerm(t term.Term) term.Term {
 	switch value := t.(type) {
 	case nil:
 		return nil
-	case *term.Constant[int]:
+	case *term.Constant[int64]:
 		return term.NewConstant(value.Value)
 	case *term.Constant[string]:
 		return term.NewConstant(value.Value)

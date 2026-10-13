@@ -69,9 +69,10 @@ const (
 )
 
 type Parser struct {
-	srcFile string
-	src     []byte
-	lang    *sitter.Language
+	srcFile     string
+	src         []byte
+	lang        *sitter.Language
+	semanticErr error
 }
 
 func NewParser(filename string, src []byte, lang *sitter.Language) *Parser {
@@ -195,11 +196,12 @@ func (p *Parser) parseTerm(c *sitter.Node) term.Term {
 		// The parser doesn't distinguish between a constant number literal
 		// and a variable. Hence, we need to try to parse the number as an interger.
 		ident := c.ChildByFieldName("variable_identifier")
-		if i, err := strconv.Atoi(ident.Utf8Text(p.src)); err == nil {
-			return term.NewConstant[int](i)
+		text := ident.Utf8Text(p.src)
+		if i := p.parseIntLiteral(ident, text); i != nil {
+			return i
 		}
 
-		return term.NewVariable(ident.Utf8Text(p.src))
+		return term.NewVariable(text)
 	case "pub_name":
 		return p.parsePubName(c)
 	case "nary_app", "nullary_fun":
@@ -382,6 +384,10 @@ func parseRules(ctx context.Context, filename string, src []byte) ([]*rule.Rule,
 		rules = append(rules, r.Subst(b).ExpandFormats(formats))
 	}
 
+	if p.semanticErr != nil {
+		return nil, &ParseError{p, p.semanticErr}
+	}
+
 	return rules, nil
 }
 
@@ -493,13 +499,29 @@ func (p *Parser) parseMacros(n *sitter.Node) *term.Binding {
 	return b
 }
 
+// parseIntLiteral returns text as an integer constant, or nil if it is not
+// a decimal integer. An integer outside the int64 range is recorded as an
+// error at the position of n, and nil is returned.
+func (p *Parser) parseIntLiteral(n *sitter.Node, text string) term.Term {
+	i, err := strconv.ParseInt(text, 10, 64)
+	if err == nil {
+		return term.NewConstant(i)
+	}
+	if errors.Is(err, strconv.ErrRange) && p.semanticErr == nil {
+		start := n.StartPosition()
+		p.semanticErr = fmt.Errorf("%s:%d:%d: integer literal %q: %w", p.srcFile, start.Row+1, start.Column+1, text, err)
+	}
+
+	return nil
+}
+
 // parsePubName parses a pub_name node and returns a constant.
 func (p *Parser) parsePubName(n *sitter.Node) term.Term {
 	// FIXME: pub_name wrapped in single quotes.
 	name := strings.Trim(n.Utf8Text(p.src), "'")
 
-	if i, err := strconv.Atoi(name); err == nil {
-		return term.NewConstant[int](i)
+	if i := p.parseIntLiteral(n, name); i != nil {
+		return i
 	}
 
 	if strings.HasPrefix(name, "0x") {
