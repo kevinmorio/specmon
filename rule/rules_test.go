@@ -27,6 +27,8 @@ import (
 	"github.com/specmon/specmon/term"
 )
 
+var benchmarkRuleSubstSink *rule.Rule
+
 // Rule.Clone documents that LHS/Act/RHS slice headers and Attrs map are
 // independent of the original, while facts and terms inside are shared.
 // These tests pin both halves of that contract.
@@ -197,5 +199,53 @@ func TestFactUnifyPreservesEvaluationErrors(t *testing.T) {
 	}
 	if !errors.Is(err, term.ErrBinaryArity) {
 		t.Fatalf("Fact.Unify error = %v, want wrapped ErrBinaryArity", err)
+	}
+}
+
+func BenchmarkRuleSubst(b *testing.B) {
+	value := term.NewVariable("value")
+	fact := rule.NewFact("BenchmarkSubst", []term.Term{value}, rule.LinearFact)
+	r := &rule.Rule{
+		Name: "BenchmarkSubst",
+		LHS:  []*rule.Fact{fact, fact, fact},
+		Act:  []*rule.Fact{fact},
+		RHS:  []*rule.Fact{fact, fact, fact},
+		Attrs: map[string]rule.Attribute{
+			rule.TriggerAttributeName: rule.TermAttribute{Value: []term.Term{value, value, value}},
+			rule.HintAttributeName:    rule.TermAttribute{Value: []term.Term{value, value, value}},
+		},
+	}
+	binding := term.NewBinding()
+	binding.Set(value, term.NewConstant[int64](42))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		benchmarkRuleSubstSink = r.Subst(binding)
+	}
+}
+
+func BenchmarkRuleReplaceFormats(b *testing.B) {
+	value := term.NewConstant[int64](42)
+	fact := rule.NewFact("BenchmarkReplaceFormats", []term.Term{value}, rule.LinearFact)
+	r := &rule.Rule{
+		Name: "BenchmarkReplaceFormats",
+		LHS:  []*rule.Fact{fact, fact, fact},
+		Act:  []*rule.Fact{fact},
+		RHS:  []*rule.Fact{fact, fact, fact},
+		Attrs: map[string]rule.Attribute{
+			rule.TriggerAttributeName: rule.TermAttribute{Value: []term.Term{value, value, value}},
+			rule.HintAttributeName:    rule.TermAttribute{Value: []term.Term{value, value, value}},
+		},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		replaced, err := r.ReplaceFormats()
+		if err != nil {
+			b.Fatalf("ReplaceFormats: %v", err)
+		}
+		benchmarkRuleSubstSink = replaced
 	}
 }

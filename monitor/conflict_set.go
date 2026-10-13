@@ -620,36 +620,6 @@ func conflictSetFactsForConfig(c *Config, body []*rule.Fact) *bindingSet {
 	return conflictSetFacts(items, body)
 }
 
-// conflictSetTerms matches a sequence of term patterns against a set of seen terms.
-// It builds a local index by function name and orders patterns by selectivity.
-// Seen terms are not deduplicated (passed nil hash/equal): the seen set is
-// already kept distinct upstream, so capping by body slot count would only
-// add overhead without removing any iteration.
-func conflictSetTerms(seen []term.Term, body []term.Term) *bindingSet {
-	return conflictSet(seen, body,
-		func(t term.Term) bool {
-			if fn, err := term.AsFunction(t); err == nil && fn != nil && fn.Name != term.PairFunctionName {
-				return true
-			}
-			return false
-		},
-		func(t term.Term) string {
-			if fn, err := term.AsFunction(t); err == nil && fn != nil {
-				return fn.Name
-			}
-			return ""
-		},
-		func(t term.Term) []term.Term {
-			if fn, err := term.AsFunction(t); err == nil && fn != nil {
-				return fn.Args
-			}
-			return nil
-		},
-		nil,
-		nil,
-	)
-}
-
 type bindingSet struct {
 	bindings []*term.Binding
 	seen     map[uint64][]int

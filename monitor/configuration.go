@@ -20,7 +20,6 @@ package monitor
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"hash/fnv"
 	"slices"
@@ -30,6 +29,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/specmon/specmon/rule"
 	"github.com/specmon/specmon/term"
+	"github.com/specmon/specmon/utils"
 )
 
 // Config is a configuration of the monitor.
@@ -65,17 +65,50 @@ type Config struct {
 	factCount int
 
 	// seen is a multiset of events that have been seen in the current configuration
-	// and that have not been processed yet.
+	// and that have not been processed yet. The monitor does not record
+	// events here: a rule with several triggers keeps its progress in pending.
 	seen []term.Term
+
+	// pending records partially matched multi-trigger rule applications.
+	// Entries are never changed in place, so clones share them.
+	pending []pendingApplication
 
 	// trace is a list of action facts that have been recorded in the current configuration.
 	trace []*rule.Fact
 
 	// hashCache memoizes Hash() so repeated lookups in HashSet[*Config]
-	// don't re-walk all facts/seen/trace per call. Any mutation must
-	// call invalidateHash().
+	// don't re-walk all facts/seen/pending/trace per call. Any mutation
+	// must call invalidateHash().
 	hashCache    uint64
 	hashCacheSet bool
+}
+
+type pendingApplication struct {
+	ruleOrdinal int
+	binding     *term.Binding
+	outstanding []int
+}
+
+func (p pendingApplication) equal(q pendingApplication) bool {
+	return p.ruleOrdinal == q.ruleOrdinal && slices.Equal(p.outstanding, q.outstanding) && p.binding.Equal(q.binding)
+}
+
+// hash includes the rule identity, binding and remaining trigger slots. Slots
+// are stored in ascending order; bindings are visited in canonical key order.
+func (p pendingApplication) hash() uint64 {
+	h := fnv.New64a().Sum64()
+	h = utils.FNV64aUint64(h, uint64(p.ruleOrdinal))    //nolint:gosec
+	h = utils.FNV64aUint64(h, uint64(p.binding.Size())) //nolint:gosec
+	p.binding.IterateSorted(func(key, value term.Term) bool {
+		h = utils.FNV64aUint64(h, key.Hash())
+		h = utils.FNV64aUint64(h, value.Hash())
+		return true
+	})
+	h = utils.FNV64aUint64(h, uint64(len(p.outstanding)))
+	for _, slot := range p.outstanding {
+		h = utils.FNV64aUint64(h, uint64(slot)) //nolint:gosec
+	}
+	return h
 }
 
 // NewConfig returns a new configuration.
@@ -84,6 +117,7 @@ func NewConfig() *Config {
 		factsByName:  make(map[string][]*rule.Fact),
 		ownedBuckets: make(map[string]bool),
 		seen:         []term.Term{},
+		pending:      []pendingApplication{},
 		trace:        []*rule.Fact{},
 	}
 }
@@ -153,6 +187,7 @@ func (c *Config) AddFact(t *rule.Fact) {
 func (c *Config) Clone() *Config {
 	d := NewConfig()
 	d.seen = slices.Clone(c.seen)
+	d.pending = slices.Clone(c.pending)
 	d.trace = slices.Clone(c.trace)
 	d.factCount = c.factCount
 
@@ -265,10 +300,11 @@ func (c *Config) String() string {
 // so any cardinality collision would silently merge structurally
 // distinct configurations.
 //
-// Implementation: each fact / seen-event contributes a 64-bit mixed
-// hash that is then ADDED (uint64, wrapping) into the section
-// accumulator. Sum is associative-commutative, so the digest is
-// order-independent. Unlike XOR, sum does not cancel duplicates:
+// Implementation: each fact, seen event and pending application
+// contributes a 64-bit mixed hash that is then ADDED (uint64,
+// wrapping) into the section accumulator. Sum is
+// associative-commutative, so the digest is order-independent.
+// Unlike XOR, sum does not cancel duplicates:
 // 2 * h(F) != 0, so [F, F] and [] produce different accumulators.
 // Sum is O(N) with zero allocations, matching the original XOR
 // implementation's hot-path cost.
@@ -279,7 +315,7 @@ func (c *Config) String() string {
 // xorshift+multiply step from splitmix64, which is cheap and
 // produces a good avalanche.
 //
-// The three sections are folded into one final FNV-1a value with a
+// The four sections are folded into one final FNV-1a value with a
 // section-tag byte and section length so a fact and a seen-event
 // with equal hashes contribute distinct bytes, and so sections of
 // different lengths cannot alias.
@@ -300,6 +336,13 @@ func (c *Config) Hash() uint64 {
 	var seenAcc uint64
 	for _, t := range c.seen {
 		seenAcc += mix64(t.Hash())
+	}
+
+	// Pending applications form a multiset: order is irrelevant, but
+	// repeated applications must contribute once per occurrence.
+	var pendingAcc uint64
+	for _, pending := range c.pending {
+		pendingAcc += mix64(pending.hash())
 	}
 
 	// trace is ordered: rule applications are recorded in firing
@@ -327,6 +370,12 @@ func (c *Config) Hash() uint64 {
 	binary.LittleEndian.PutUint64(buf[:], uint64(len(c.seen)))
 	h.Write(buf[:])
 	binary.LittleEndian.PutUint64(buf[:], seenAcc)
+	h.Write(buf[:])
+
+	h.Write([]byte{hashSectionPending})
+	binary.LittleEndian.PutUint64(buf[:], uint64(len(c.pending)))
+	h.Write(buf[:])
+	binary.LittleEndian.PutUint64(buf[:], pendingAcc)
 	h.Write(buf[:])
 
 	h.Write([]byte{hashSectionTrace})
@@ -357,13 +406,15 @@ func mix64(x uint64) uint64 {
 // memoised digests of any persisted configuration set, but those are
 // never written to disk so a renumbering is safe.
 const (
-	hashSectionFacts byte = 1
-	hashSectionSeen  byte = 2
-	hashSectionTrace byte = 3
+	hashSectionFacts   byte = 1
+	hashSectionSeen    byte = 2
+	hashSectionPending byte = 3
+	hashSectionTrace   byte = 4
 )
 
 // invalidateHash clears the memoized Hash. Callers that mutate facts,
-// seen, or trace must call this so the next Hash() recomputes.
+// seen, pending applications or trace must call this so the next
+// Hash() recomputes.
 func (c *Config) invalidateHash() {
 	c.hashCache = 0
 	c.hashCacheSet = false
@@ -389,25 +440,70 @@ func (c *Config) DeleteSeen(t term.Term) bool {
 	return true
 }
 
+func (c *Config) addPending(pending pendingApplication) {
+	c.pending = append(c.pending, pending)
+	c.invalidateHash()
+}
+
+func (c *Config) removePending(index int) {
+	c.pending = slices.Delete(c.pending, index, index+1)
+	c.invalidateHash()
+}
+
+func (c *Config) replacePending(index int, pending pendingApplication) {
+	c.pending[index] = pending
+	c.invalidateHash()
+}
+
+func (c *Config) reserveRuleLHS(r *rule.Rule, b *term.Binding, matchedTrigger term.Term) (*Config, error) {
+	split := term.BindingFromPair(matchedTrigger.Subst(b))
+	lhs := make([]*rule.Fact, len(r.LHS))
+	for i, fact := range r.LHS {
+		resolved, err := fact.Subst(b).Subst(split).ReplaceFormats()
+		if err != nil {
+			return nil, fmt.Errorf("evaluate rule %s LHS: %w", r.Name, err)
+		}
+		if !resolved.IsGround() {
+			return nil, fmt.Errorf("expected ground LHS in rule %s, got %s", r.Name, resolved)
+		}
+		lhs[i] = resolved
+	}
+
+	d := c.Clone()
+	for _, fact := range lhs {
+		if fact.IsLinear() && !d.DeleteFact(fact) {
+			return nil, fmt.Errorf("cannot delete non-existing fact '%s'", fact)
+		}
+	}
+	return d, nil
+}
+
+func (c *Config) finalizeReservedRule(r *rule.Rule, b *term.Binding) (*Config, []*rule.Fact, error) {
+	evaluated, err := r.EvaluateGround(b)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	d := c.Clone()
+	for _, fact := range evaluated.RHS {
+		if !rule.IsInternalFactName(fact.Name) {
+			d.AddFact(fact)
+		}
+	}
+	if err := restrSatisfied(evaluated.Act); err != nil {
+		return nil, nil, err
+	}
+	return d, evaluated.Act, nil
+}
+
 // ApplyRule applies a rule to a configuration and returns the resulting configuration.
 // If ev is a tuple of the form <fn, ret>, then fn is replaced by ret.
 func (c *Config) ApplyRule(r *rule.Rule, b *term.Binding) (*Config, []*rule.Fact, error) {
 	log.Infof("   applying rule %s\n", r.Name)
 
-	s := r.Subst(b)
-	t := r.Subst(b)
-
-	for _, f := range s.Triggers() {
-		t = t.Subst(splitTupleBinding(f))
-	}
-	var err error
-	t, err = t.ReplaceFormats()
+	t, err := r.EvaluateGround(b)
 	if err != nil {
-		return nil, nil, fmt.Errorf("evaluate rule %s: %w", r.Name, err)
-	}
-
-	if !t.IsGround() {
-		return nil, nil, fmt.Errorf("expected ground rule (%s), got variables: %v", t.Name, s.Vars())
+		return nil, nil, err
 	}
 
 	d := c.Clone()
@@ -426,45 +522,16 @@ func (c *Config) ApplyRule(r *rule.Rule, b *term.Binding) (*Config, []*rule.Fact
 		}
 	}
 
-	// Remove triggers from seen events.
-	// Triggers in s still contain formats.
-	for _, f := range s.Triggers() {
-		resolved, err := term.ReplaceFormats(f)
-		if err != nil {
-			return nil, nil, fmt.Errorf("evaluate trigger for rule %s: %w", r.Name, err)
-		}
-		if !d.DeleteSeen(resolved) {
-			return nil, nil, fmt.Errorf("cannot delete non-existing event '%s'", f)
-		}
-	}
-
 	// Add action facts to trace.
 	// FIXME: For performance reasons, this is commented out.
 	// d.trace = append(d.trace, t.Act...)
 
 	// Check if special event restrictions are satisfied.
 	if err := restrSatisfied(t.Act); err != nil {
-		// Don't wrap restriction violations to avoid redundant error messages
-		if errors.Is(err, ErrRestrictionViolated) {
-			return nil, nil, err
-		}
-		return nil, nil, fmt.Errorf("rule not applied: %w", err)
+		return nil, nil, err
 	}
 
 	return d, t.Act, nil
-}
-
-func splitTupleBinding(a term.Term) *term.Binding {
-	b := term.NewBinding()
-
-	fst, snd := splitPair(a)
-	if fst == nil || snd == nil {
-		return b
-	}
-
-	b.Set(fst, snd)
-
-	return b
 }
 
 func splitPair(t term.Term) (term.Term, term.Term) {
@@ -483,19 +550,21 @@ func splitPair(t term.Term) (term.Term, term.Term) {
 	return fst, snd
 }
 
+// restrSatisfied checks the restriction actions of trace. A violated
+// restriction is ErrRestrictionViolated; a malformed one is another error.
 func restrSatisfied(trace []*rule.Fact) error {
 	for _, t := range trace {
 		switch t.Name {
 		case "Eq", "Equal":
 			if len(t.Args) != 2 {
-				return fmt.Errorf("event restriction: %s must have two arguments", t.Name)
+				return fmt.Errorf("rule not applied: event restriction: %s must have two arguments", t.Name)
 			}
 			if !t.Args[0].Equal(t.Args[1]) {
 				return fmt.Errorf("%w: %s", ErrRestrictionViolated, t)
 			}
 		case "Neq", "NotEqual", "Unequal":
 			if len(t.Args) != 2 {
-				return fmt.Errorf("event restriction: %s must have two arguments", t.Name)
+				return fmt.Errorf("rule not applied: event restriction: %s must have two arguments", t.Name)
 			}
 			if t.Args[0].Equal(t.Args[1]) {
 				return fmt.Errorf("%w: %s", ErrRestrictionViolated, t)

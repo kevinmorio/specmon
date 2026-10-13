@@ -30,6 +30,8 @@ When the rule is applied, the function term `senc(~k, $m)` is replaced with its 
 
 SpecMon also supports multiple triggers per rule. This is useful for modeling paired enter/leave events and rules that should only fire after all required calls have been seen.
 
+The triggers of such a rule may arrive in any order. The first one that matches starts the rule and consumes its linear premises; persistent premises stay available. The conclusions, actions and restrictions apply when the last trigger arrives. An event that advances a started application does not start the same rule again, and equal started applications complete one at a time.
+
 ## Hints
 
 Hints are a lookahead mechanism used by start rules. They indicate which triggers the rule expects next, so the monitor can decide whether the rule is worth pursuing for the current event.
