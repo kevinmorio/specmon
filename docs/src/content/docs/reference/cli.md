@@ -154,7 +154,16 @@ Decomp result: 23 rules
 
 **`--pid, -P <pid>`**
 - **Type**: integer
-- **Description**: Reserved; currently ignored
+- **Description**: Terminate this positive PID with `SIGKILL` after a specification violation. When the flag is omitted, SpecMon does not terminate a process. Zero and negative values are rejected.
+
+**`--on-violation <path>`**
+- **Type**: string
+- **Description**: Run this executable after a specification violation. The path is executed directly and is not interpreted by a shell; a name without a slash is looked up in `PATH`.
+
+**`--on-violation-timeout <duration>`**
+- **Type**: duration
+- **Default**: `5s`
+- **Description**: Limit violation hook execution. Zero disables the timeout. Negative durations are rejected.
 
 **`--rewrite-with, -R <spec-path>`**
 - **Type**: string
@@ -188,7 +197,93 @@ Use `--rewrite-with` to apply rewrite rules before monitoring. Pre-trace events 
 specmon monitor --rewrite-with rewrite.spthy --pre-trace init.json --in live.json protocol.spthy
 ```
 
-Use the same `--role` and `--defines` for both the rewrite and monitoring rules.
+The rewrite rules are used as parsed: `--defines` applies to them, while
+`--role` and `--decompose` apply only to the monitoring rules. Both
+specifications are loaded before any event is processed.
+
+### Violation reactions
+
+`--on-violation` runs only when the main monitor reports a genuine
+specification violation. It does not run for malformed input, transport
+failures, rewrite failures, or cancellation, nor when an action or conclusion
+of an applied rule cannot be evaluated. A trigger, hint or premise whose
+evaluation fails does not match; if no other rule accepts the event, that is a
+violation. The hook names one executable or script, as a path or as a name
+without a slash that is looked up in `PATH`. SpecMon does not invoke a shell or
+parse arguments from it, so scripts need a valid shebang.
+
+The hook receives one newline terminated JSON object on stdin. Both hook stdout
+and hook stderr are forwarded to SpecMon stderr. Payload schema version 1 is:
+
+```json
+{
+  "schema_version": "1",
+  "kind": "violation",
+  "error_kind": "no_applicable_rule",
+  "error": "no applicable rule found",
+  "event_index": 2,
+  "time": 123456789,
+  "event": {
+    "name": "input",
+    "type": "function",
+    "args": []
+  },
+  "event_term": "input()",
+  "spec_path": "model.spthy",
+  "role": "client",
+  "pid": 1234,
+  "rewrite_with": "rewrite.spthy",
+  "stats": {
+    "received": 2,
+    "processed": 1,
+    "total_time": 1000000,
+    "avg_latency_received": 20,
+    "avg_latency_processed": 25,
+    "avg_processing_time": 5,
+    "med_latency_received": 20,
+    "med_latency_processed": 25
+  }
+}
+```
+
+`event_index` is one based and counts events delivered to the main monitor,
+including pre-trace events and outputs from an inline rewriter. Raw events
+consumed but not emitted by the rewriter do not count. `time` is the original
+event timestamp in nanoseconds. Every duration in `stats` is also measured in
+nanoseconds. Optional `role`, `pid`, and `rewrite_with` fields are omitted when
+they are not configured. `event_term` provides a stable readable form of the
+event alongside the version 1 JSON event representation.
+
+The hook environment inherits the SpecMon environment and replaces these
+values for the current violation:
+
+- `SPECMON_HOOK_KIND=violation`
+- `SPECMON_ERROR_KIND=no_applicable_rule`
+- `SPECMON_EVENT_INDEX=<index>`
+- `SPECMON_PID=<pid>` when a PID is configured
+
+An inherited `SPECMON_PID` is removed when PID termination is disabled.
+
+After a violation, SpecMon runs the hook first and then attempts configured PID
+termination. A hook startup failure, nonzero exit, or timeout is reported on
+stderr but does not replace the original monitor violation or skip PID
+termination. A PID termination failure is handled the same way. The command
+returns the original violation with a nonzero exit status after completing the
+bounded reaction sequence; its error names the index and the term of the
+rejected event, for example `Error: monitor violation at event 4: no applicable
+rule found <done(), <>>`. A first signal that arrives after the violation is
+captured does not cancel that sequence; only `--on-violation-timeout` limits
+the hook. After the hook exits, SpecMon waits at most one second for its
+standard streams, which a process that the hook starts in the background may
+keep open.
+
+### Signals
+
+On a first `SIGINT` or `SIGTERM`, `monitor` and `rewrite` stop reading input,
+print `signal received, exiting` on stderr, and exit with status 0; `monitor`
+also prints its statistics line. A second signal ends SpecMon at once, also
+while it waits for a violation hook or for a blocked output; the PID is then not
+terminated and no error line is printed.
 
 ### Rewrite command: `specmon rewrite`
 
@@ -234,6 +329,11 @@ specmon rewrite --in raw.json --out clean.json --json transform.spthy
 # Rewrite with role selection
 specmon --role preprocessor rewrite --json transform.spthy < events.json
 ```
+
+If no rewrite rule accepts an event, the command stops with an error that names
+the index and the term of the rejected event, for example `Error: rewrite
+events: rewrite violation at event 2: no applicable rule found <zzz(), <>>`.
+The events emitted before it are written first.
 
 ## Input/output formats
 

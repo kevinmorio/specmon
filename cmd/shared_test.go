@@ -19,10 +19,16 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestProcessRulesDropsFactsUnusedBySelectedRules(t *testing.T) {
@@ -42,11 +48,90 @@ end
 		t.Fatalf("write test specification: %v", err)
 	}
 
-	_, selected, _, err := ProcessRules(specPath, "client", false, nil)
+	rules, err := ProcessRules(context.Background(), specPath, "client", false, nil)
 	if err != nil {
 		t.Fatalf("ProcessRules: %v", err)
 	}
-	if len(selected) != 1 || fmt.Sprint(selected[0].RHS) != "[Compute_(len(hash(m)))]" {
-		t.Fatalf("selected rules = %v", selected)
+	if len(rules.Selected) != 1 || fmt.Sprint(rules.Selected[0].RHS) != "[Compute_(len(hash(m)))]" {
+		t.Fatalf("selected rules = %v", rules.Selected)
+	}
+}
+
+type failingListener struct {
+	err error
+}
+
+func (l *failingListener) Accept() (net.Conn, error) { return nil, l.err }
+func (l *failingListener) Close() error              { return nil }
+func (l *failingListener) Addr() net.Addr            { return nil }
+
+func TestMultiplexedReaderCloseSettlesConnections(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	reader := newMultiplexedReader(listener)
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer client.Close()
+
+	line := strings.Repeat("event", 1000)
+	writeResult := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(client, line+"\n")
+		writeResult <- err
+	}()
+
+	var got strings.Builder
+	buffer := make([]byte, 31)
+	for !strings.HasSuffix(got.String(), "\n") {
+		n, err := reader.Read(buffer)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		got.Write(buffer[:n])
+	}
+	if got.String() != line+"\n" {
+		t.Fatalf("Read returned a changed event of length %d", got.Len())
+	}
+	if err := <-writeResult; err != nil {
+		t.Fatalf("write event: %v", err)
+	}
+
+	if err := reader.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	readResult := make(chan error, 1)
+	go func() {
+		_, err := client.Read(make([]byte, 1))
+		readResult <- err
+	}()
+	select {
+	case err := <-readResult:
+		if err == nil {
+			t.Fatal("active client remained open after Close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("active client did not settle after Close")
+	}
+}
+
+func TestMultiplexedReaderReturnsListenerFailures(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("listener failed")
+	reader := newMultiplexedReader(&failingListener{err: wantErr})
+	defer reader.Close()
+
+	_, err := reader.Read(make([]byte, 1))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Read error = %v, want listener failure", err)
 	}
 }
