@@ -35,6 +35,8 @@ type FactType string
 const (
 	LinearFact     = FactType("linear")
 	PersistentFact = FactType("persistent")
+
+	ComputeFactName = "Compute_"
 )
 
 var ErrFactUnify = errors.New("cannot unify facts")
@@ -61,6 +63,11 @@ func NewFact(name string, args []term.Term, t FactType) *Fact {
 		Args: args,
 		Type: t,
 	}
+}
+
+// IsInternalFactName reports whether name marks a fact that is never stored.
+func IsInternalFactName(name string) bool {
+	return strings.HasSuffix(name, "_")
 }
 
 func (f *Fact) IsLinear() bool {

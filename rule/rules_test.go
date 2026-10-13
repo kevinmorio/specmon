@@ -19,6 +19,7 @@
 package rule_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/specmon/specmon/rule"
@@ -135,5 +136,46 @@ func TestRuleCloneNilAttrsBecomesEmpty(t *testing.T) {
 	clone.Attrs["x"] = rule.StringAttribute{Value: "y"}
 	if _, ok := original.Attrs["x"]; ok {
 		t.Error("assigning to clone.Attrs leaked into original Attrs (which was nil)")
+	}
+}
+
+// Dead and AlsoDead are consumed by no rule, so each of their function
+// arguments stays once as a Compute_ fact; h(x) already is one. Consumer
+// consumes Next(x) but not Next(x, x), which has another arity.
+func TestRulesDropUnusedRHSFacts(t *testing.T) {
+	x := term.NewVariable("x")
+	hx := term.NewFunction("h", []term.Term{x})
+	gx := term.NewFunction("g", []term.Term{x})
+	fact := func(name string, args ...term.Term) *rule.Fact {
+		return rule.NewFact(name, args, rule.LinearFact)
+	}
+	producer := &rule.Rule{
+		Name: "Producer",
+		LHS:  []*rule.Fact{fact("State", x)},
+		Act:  []*rule.Fact{fact(rule.ComputeFactName, gx)},
+		RHS: []*rule.Fact{
+			fact("Dead", term.NewConstant("a"), x, hx, gx),
+			fact("Next", x),
+			fact("Next", x, x),
+			fact(rule.ComputeFactName, term.NewFunction("h", []term.Term{term.NewVariable("x")})),
+			fact("AlsoDead", term.NewFunction("g", []term.Term{x}), term.NewFunction("k", []term.Term{x})),
+		},
+		Attrs: map[string]rule.Attribute{rule.TriggerAttributeName: rule.TermAttribute{Value: []term.Term{hx}}},
+	}
+	consumer := &rule.Rule{Name: "Consumer", LHS: []*rule.Fact{fact("Next", x)}, Attrs: map[string]rule.Attribute{}}
+	original := producer.String()
+
+	got := rule.Rules{producer, consumer}.DropUnusedRHSFacts()
+
+	if producer.String() != original {
+		t.Fatalf("original rule changed:\n%s", producer)
+	}
+	want := "[Compute_(g(x)) Next(x) Compute_(h(x)) Compute_(k(x))]"
+	if rhs := fmt.Sprint(got[0].RHS); rhs != want {
+		t.Fatalf("RHS = %s, want %s", rhs, want)
+	}
+	got[0].RHS = producer.RHS
+	if got[0].String() != original || got[1].String() != consumer.String() {
+		t.Fatalf("rules changed outside the RHS:\n%s\n%s", got[0], got[1])
 	}
 }

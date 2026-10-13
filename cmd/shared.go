@@ -44,7 +44,7 @@ func ProcessRules(specPath, role string, decompose bool, defines []string) ([]*r
 		return nil, nil, nil, fmt.Errorf("cannot process rules: %w", err)
 	}
 
-	selectedRules := rule.Rules(rules).FilterByRole(role)
+	selectedRules := rule.Rules(rules).FilterByRole(role).DropUnusedRHSFacts()
 
 	var decompRules []*rule.Rule
 	if decompose {
