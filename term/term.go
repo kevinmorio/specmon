@@ -49,6 +49,8 @@ const (
 	ExpFunctionName    = "exp"
 	AndFunctionName    = "and"
 	OrFunctionName     = "or"
+	XorFunctionName    = "xor"
+	NotFunctionName    = "not"
 	AddFunctionName    = "add"
 	BinaryArity        = 2
 	TernaryArity       = 3
@@ -63,6 +65,9 @@ var ReservedNames = data.NewSet[string](
 	AddFunctionName,
 	AndFunctionName,
 	OrFunctionName,
+	XorFunctionName,
+	NotFunctionName,
+	ReverseFuncName,
 	string(FormatIntType),
 	string(FormatStringType),
 	string(FormatByteType))
@@ -140,6 +145,8 @@ var evaluatableFunctions = map[string]bool{
 	AddFunctionName:   true,
 	AndFunctionName:   true,
 	OrFunctionName:    true,
+	XorFunctionName:   true,
+	NotFunctionName:   true,
 	SliceFunctionName: true,
 	ReverseFuncName:   true,
 }
@@ -1236,9 +1243,15 @@ func Evaluate(t Term) (Term, error) {
 	if err != nil {
 		return t, nil
 	}
-
-	if f.Name == AddFunctionName && len(f.Args) != BinaryArity {
-		return nil, ErrBinaryArity
+	switch f.Name {
+	case AddFunctionName, AndFunctionName, OrFunctionName, XorFunctionName:
+		if len(f.Args) != BinaryArity {
+			return nil, ErrBinaryArity
+		}
+	case NotFunctionName:
+		if len(f.Args) != 1 {
+			return nil, ErrUnaryArity
+		}
 	}
 
 	newArgs, modified, err := evaluateArguments(f.Args)
@@ -1251,18 +1264,16 @@ func Evaluate(t Term) (Term, error) {
 		return handleCatFunction(f, newArgs, modified)
 	case AddFunctionName:
 		return handleAddFunction(f, newArgs, modified)
-	case AndFunctionName, OrFunctionName:
-		return handleArithmeticFunction(f, newArgs, modified)
+	case AndFunctionName, OrFunctionName, XorFunctionName:
+		return handleBitwiseFunction(f, newArgs, modified)
+	case NotFunctionName:
+		return handleNotFunction(f, newArgs, modified)
 	case SliceFunctionName:
 		return handleSliceFunction(f, newArgs, modified)
 	case ReverseFuncName:
 		return handleReverseFunction(f, newArgs, modified)
 	default:
-		if !modified {
-			return t, nil
-		}
-
-		return NewFunction(f.Name, newArgs), nil
+		return unevaluated(f, newArgs, modified), nil
 	}
 }
 
@@ -1320,20 +1331,26 @@ func handleCatFunction(f *Function, args []Term, modified bool) (Term, error) {
 	fields := make([]*Function, len(f.Args))
 
 	var err error
+	symbolic := false
 	for i, a := range args {
 		fields[i], err = AsFunction(a)
 		if err != nil {
 			return nil, ErrInvalidFormatFunction
 		}
+		// A field that holds a call which is neither evaluable nor observed
+		// keeps the concatenation symbolic, as for the other operations.
+		symbolic = symbolic || slices.ContainsFunc(fields[i].Args, func(arg Term) bool { return arg.GetType() == FunctionType })
+	}
+	if symbolic {
+		return unevaluated(f, args, modified), nil
 	}
 
 	bytes, err := FormatToBytes(fields, NewBinding())
 	if err != nil {
-		if modified {
-			return NewFunction(f.Name, args), nil
+		if candidate := unevaluated(f, args, modified); !IsGround(candidate) {
+			return candidate, nil
 		}
-
-		return f, nil
+		return nil, fmt.Errorf("%w: invalid format construction: %w", ErrEvaluation, err)
 	}
 
 	return NewConstant[[]byte](bytes), nil
@@ -1359,45 +1376,67 @@ func handleAddFunction(f *Function, args []Term, modified bool) (Term, error) {
 	return NewConstant(left + right), nil
 }
 
-func handleArithmeticFunction(f *Function, args []Term, modified bool) (Term, error) {
-	if len(f.Args) != BinaryArity {
-		return nil, ErrBinaryArity
+func handleBitwiseFunction(f *Function, args []Term, modified bool) (Term, error) {
+	if !operandsKnown(args) {
+		return unevaluated(f, args, modified), nil
 	}
 
-	left, err := AsInt(args[0])
+	left, err := bitwisePattern(args[0])
 	if err != nil {
-		if modified {
-			return NewFunction(f.Name, args), nil
-		}
-
-		return f, nil
+		return nil, err
 	}
-
-	right, err := AsInt(args[1])
+	right, err := bitwisePattern(args[1])
 	if err != nil {
-		if modified {
-			return NewFunction(f.Name, args), nil
-		}
-
-		return f, nil
+		return nil, err
 	}
 
-	var result int64
+	var result uint64
 	switch f.Name {
 	case AndFunctionName:
 		result = left & right
 	case OrFunctionName:
 		result = left | right
+	case XorFunctionName:
+		result = left ^ right
 	}
 
-	// Result type is the same as the type of the first argument.
-	switch ft := args[0].(type) {
-	case *Constant[int64]:
-		return NewConstant[int64](result), nil
-	case *Constant[[]byte]:
-		b := utils.IntToBytes(result, internalByteOrder())
+	// bitwisePattern accepted args[0], so it is an int64 or a bytes constant.
+	if first, ok := args[0].(*Constant[[]byte]); ok {
+		b := utils.IntToBytes(int64(result), internalByteOrder())
+		return NewConstant(b[:len(first.Value)]), nil
+	}
+	return NewConstant(int64(result)), nil
+}
 
-		return NewConstant[[]byte](b[:len(ft.Value)]), nil
+func bitwisePattern(t Term) (uint64, error) {
+	switch value := t.(type) {
+	case *Constant[int64]:
+		return uint64(value.Value), nil //nolint:gosec // Preserve the two's-complement bit pattern.
+	case *Constant[[]byte]:
+		if len(value.Value) > 8 {
+			return 0, ErrInvalidType
+		}
+		padded := utils.PadWithByteOrder(value.Value, internalByteOrder(), 8)
+		return internalByteOrder().Uint64(padded), nil
+	default:
+		return 0, ErrInvalidType
+	}
+}
+
+func handleNotFunction(f *Function, args []Term, modified bool) (Term, error) {
+	if !operandsKnown(args) {
+		return unevaluated(f, args, modified), nil
+	}
+
+	switch value := args[0].(type) {
+	case *Constant[int64]:
+		return NewConstant(^value.Value), nil
+	case *Constant[[]byte]:
+		result := make([]byte, len(value.Value))
+		for i, b := range value.Value {
+			result[i] = ^b
+		}
+		return NewConstant(result), nil
 	default:
 		return nil, ErrInvalidType
 	}

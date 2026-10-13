@@ -492,6 +492,216 @@ func TestEvaluateSliceSignedBoundaries(t *testing.T) {
 	}
 }
 
+func TestEvaluateXorAndNot(t *testing.T) {
+	t.Parallel()
+
+	xorTerm := func(left, right term.Term) term.Term {
+		return term.NewFunction(term.XorFunctionName, []term.Term{left, right})
+	}
+	notTerm := func(value term.Term) term.Term {
+		return term.NewFunction(term.NotFunctionName, []term.Term{value})
+	}
+	allOnes := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	tests := []struct {
+		name  string
+		input term.Term
+		want  term.Term
+	}{
+		{"numeric xor", xorTerm(term.NewConstant[int64](243), term.NewConstant[int64](15)), term.NewConstant[int64](252)},
+		{"byte xor preserves width", xorTerm(term.NewConstant([]byte{0xf3, 0x00}), term.NewConstant[int64](15)), term.NewConstant([]byte{0xfc, 0x00})},
+		{"mixed xor with numeric result", xorTerm(term.NewConstant[int64](15), term.NewConstant([]byte{0xf3})), term.NewConstant[int64](252)},
+		{
+			"nested xor",
+			xorTerm(xorTerm(term.NewConstant[int64](243), term.NewConstant[int64](15)), term.NewConstant[int64](255)),
+			term.NewConstant[int64](3),
+		},
+		{"numeric not", notTerm(term.NewConstant[int64](0)), term.NewConstant[int64](-1)},
+		{"signed numeric not", notTerm(term.NewConstant[int64](243)), term.NewConstant[int64](-244)},
+		{"one-byte not", notTerm(term.NewConstant([]byte{0x00})), term.NewConstant([]byte{0xff})},
+		{"two-byte not", notTerm(term.NewConstant([]byte{0x00, 0xff})), term.NewConstant([]byte{0xff, 0x00})},
+		{
+			"eight-byte not",
+			notTerm(term.NewConstant([]byte{
+				0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+			})),
+			term.NewConstant([]byte{
+				0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8,
+			}),
+		},
+		{"empty byte not", notTerm(term.NewConstant([]byte{})), term.NewConstant([]byte{})},
+		{
+			"nested not",
+			notTerm(notTerm(term.NewConstant([]byte{0x12, 0x34}))),
+			term.NewConstant([]byte{0x12, 0x34}),
+		},
+		{
+			"and preserves an eight-byte first operand",
+			term.NewFunction(term.AndFunctionName, []term.Term{
+				term.NewConstant(allOnes),
+				term.NewConstant[int64](-2),
+			}),
+			term.NewConstant([]byte{0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}),
+		},
+		{
+			"or returns a signed numeric result",
+			term.NewFunction(term.OrFunctionName, []term.Term{
+				term.NewConstant[int64](-256),
+				term.NewConstant([]byte{0xff}),
+			}),
+			term.NewConstant[int64](-1),
+		},
+		{
+			"xor accepts an all-ones byte pattern",
+			term.NewFunction(term.XorFunctionName, []term.Term{
+				term.NewConstant(allOnes),
+				term.NewConstant[int64](-1),
+			}),
+			term.NewConstant(make([]byte, 8)),
+		},
+		{
+			"not complements all numeric bits",
+			term.NewFunction(term.NotFunctionName, []term.Term{
+				term.NewConstant[int64](-1 << 63),
+			}),
+			term.NewConstant[int64](1<<63 - 1),
+		},
+		{
+			"reverse reinterprets the signed bit pattern",
+			term.NewFunction(term.ReverseFuncName, []term.Term{
+				term.NewConstant[int64](-2),
+			}),
+			term.NewConstant[int64](-72057594037927937),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := term.Evaluate(test.input)
+			if err != nil {
+				t.Fatalf("Evaluate(%s): %v", test.input, err)
+			}
+			if !got.Equal(test.want) {
+				t.Fatalf("Evaluate(%s) = %s, want %s", test.input, got, test.want)
+			}
+		})
+	}
+}
+
+func TestEvaluateBitwiseResidualsAndInvalidOperands(t *testing.T) {
+	t.Parallel()
+
+	operands := []struct {
+		name    string
+		value   term.Term
+		wantErr error
+	}{
+		{"variable", term.NewVariable("x"), nil},
+		{"ground function", term.NewFunction("opaque", []term.Term{term.NewConstant[int64](1)}), nil},
+		{"invalid string", term.NewConstant("text"), term.ErrInvalidType},
+	}
+	for _, function := range []string{term.AddFunctionName, term.AndFunctionName, term.OrFunctionName, term.XorFunctionName, term.NotFunctionName} {
+		for _, operand := range operands {
+			if function == term.AddFunctionName && operand.wantErr != nil {
+				operand.wantErr = term.ErrEvaluation
+			}
+			t.Run(function+" "+operand.name, func(t *testing.T) {
+				t.Parallel()
+				args := []term.Term{operand.value}
+				if function != term.NotFunctionName {
+					args = append(args, term.NewConstant[int64](1))
+				}
+				input := term.NewFunction(function, args)
+				got, err := term.Evaluate(input)
+				if operand.wantErr != nil {
+					if !errors.Is(err, operand.wantErr) {
+						t.Fatalf("Evaluate(%s) error = %v, want %v", input, err, operand.wantErr)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("Evaluate(%s): %v", input, err)
+				}
+				if !got.Equal(input) {
+					t.Fatalf("Evaluate(%s) = %s, want symbolic residual", input, got)
+				}
+			})
+		}
+	}
+
+	evaluatedOpaque := term.NewFunction("opaque", []term.Term{
+		term.NewFunction(term.AddFunctionName, []term.Term{term.NewConstant[int64](1), term.NewConstant[int64](1)}),
+	})
+	t.Run("rebuilt residual", func(t *testing.T) {
+		t.Parallel()
+		input := term.NewFunction(term.XorFunctionName, []term.Term{evaluatedOpaque, term.NewConstant[int64](1)})
+		want := term.NewFunction(term.XorFunctionName, []term.Term{
+			term.NewFunction("opaque", []term.Term{term.NewConstant[int64](2)}),
+			term.NewConstant[int64](1),
+		})
+		got, err := term.Evaluate(input)
+		if err != nil {
+			t.Fatalf("Evaluate(%s): %v", input, err)
+		}
+		if !got.Equal(want) {
+			t.Fatalf("Evaluate(%s) = %s, want %s", input, got, want)
+		}
+	})
+}
+
+func TestEvaluateBitwiseArity(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{term.AndFunctionName, term.OrFunctionName, term.XorFunctionName} {
+		_, err := term.Evaluate(term.NewFunction(name, []term.Term{term.NewConstant[int64](1)}))
+		if !errors.Is(err, term.ErrBinaryArity) {
+			t.Errorf("%s arity error = %v, want ErrBinaryArity", name, err)
+		}
+	}
+
+	_, err := term.Evaluate(term.NewFunction(term.NotFunctionName, []term.Term{
+		term.NewConstant[int64](1),
+		term.NewConstant[int64](2),
+	}))
+	if !errors.Is(err, term.ErrUnaryArity) {
+		t.Fatalf("not arity error = %v, want ErrUnaryArity", err)
+	}
+}
+
+func TestUnifyDoesNotInvertOrNormalizeBitwiseFunctions(t *testing.T) {
+	t.Parallel()
+
+	f := term.NewFunction("f", nil)
+	g := term.NewFunction("g", nil)
+	h := term.NewFunction("h", nil)
+	for _, operation := range []term.Term{
+		term.NewFunction(term.XorFunctionName, []term.Term{f, g}),
+		term.NewFunction(term.NotFunctionName, []term.Term{f}),
+	} {
+		if _, err := term.Unify(operation, term.NewConstant[int64](1)); err == nil {
+			t.Fatalf("Unify(%s, 1) inverted a construct-side operation", operation)
+		}
+	}
+
+	commutedLeft := term.NewFunction(term.XorFunctionName, []term.Term{f, g})
+	commutedRight := term.NewFunction(term.XorFunctionName, []term.Term{g, f})
+	if _, err := term.Unify(commutedLeft, commutedRight); err == nil {
+		t.Fatal("symbolic xor unified after commutative normalization")
+	}
+
+	associatedLeft := term.NewFunction(term.XorFunctionName, []term.Term{
+		term.NewFunction(term.XorFunctionName, []term.Term{f, g}),
+		h,
+	})
+	associatedRight := term.NewFunction(term.XorFunctionName, []term.Term{
+		f,
+		term.NewFunction(term.XorFunctionName, []term.Term{g, h}),
+	})
+	if _, err := term.Unify(associatedLeft, associatedRight); err == nil {
+		t.Fatal("symbolic xor unified after associative normalization")
+	}
+}
+
 // Vars walks f(a, g(b, a), c) and returns variables in left-to-right
 // order with duplicates preserved. Pin this so the prealloc rewrite
 // can't silently reorder.
@@ -637,4 +847,46 @@ func TestSubstBindingFastPath(t *testing.T) {
 			t.Errorf("SubstBinding({f(x,y)->z}, g(f(x,y))) = %v; want %v", got, want)
 		}
 	})
+}
+
+// TestEvaluateCatKeepsUnevaluableCallsSymbolic checks that a ground cat
+// whose field holds a call that cannot be evaluated stays symbolic, as the
+// other operations do, while an invalid constant is an evaluation error.
+func TestEvaluateCatKeepsUnevaluableCallsSymbolic(t *testing.T) {
+	t.Parallel()
+
+	field := func(kind term.FormatType, value term.Term) term.Term {
+		return term.NewFunction(string(kind), []term.Term{value})
+	}
+	cat := func(fields ...term.Term) term.Term { return term.NewFunction(term.CatFunctionName, fields) }
+	opaque := term.NewFunction("opaque", []term.Term{term.NewConstant[int64](1)})
+	pair := term.NewFunction(term.PairFunctionName, []term.Term{term.NewConstant([]byte{1}), term.NewConstant([]byte{2})})
+	for _, input := range []term.Term{
+		cat(field(term.FormatByteType, opaque)),
+		cat(field(term.FormatByteType, term.NewConstant([]byte{1})), field(term.FormatByteType, opaque)),
+		cat(field(term.FormatByteType, pair)),
+		cat(formatField(term.FormatIntType, term.NewVariable("x"), 1)),
+	} {
+		got, err := term.Evaluate(input)
+		if err != nil || !got.Equal(input) {
+			t.Errorf("Evaluate(%s) = %v, %v; want symbolic residual", input, got, err)
+		}
+	}
+	for _, invalid := range []term.Term{
+		cat(field(term.FormatIntType, term.NewConstant("text"))),
+		cat(formatField(term.FormatIntType, term.NewConstant[int64](256), 1)),
+	} {
+		if got, err := term.Evaluate(invalid); !errors.Is(err, term.ErrEvaluation) {
+			t.Errorf("Evaluate(%s) = %v, %v; want an evaluation error", invalid, got, err)
+		}
+	}
+	// A field that is not a format function is an error in any position.
+	for _, malformed := range []term.Term{
+		cat(field(term.FormatByteType, opaque), term.NewVariable("y")),
+		cat(term.NewVariable("y"), field(term.FormatByteType, opaque)),
+	} {
+		if got, err := term.Evaluate(malformed); !errors.Is(err, term.ErrInvalidFormatFunction) {
+			t.Errorf("Evaluate(%s) = %v, %v; want %v", malformed, got, err, term.ErrInvalidFormatFunction)
+		}
+	}
 }

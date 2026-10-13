@@ -150,7 +150,7 @@ Performs natural-number addition.
 **Usage notes:**
 - The result is an integer, whatever the kinds of the operands
 - An addition that overflows the signed 64-bit range is an evaluation error
-- `add` is evaluated once its operands are known; it is not used to parse values
+- `add`, `and`, `or` and `xor` are evaluated once their operands are known; they are not used to parse values
 
 **Example:**
 ```tamarin
@@ -164,17 +164,20 @@ Performs bitwise AND operation on integers.
 **Parameters:**
 - `a`, `b` — Integer or byte values
 
+Byte values have at most eight bytes, and a constant of another kind, such as a string, is an evaluation error. The
+result has the kind, and for bytes the length, of `a`.
+
 **Examples:**
 
 ```tamarin
 // Extract specific bits
-and(flags, 0x0F)        // Keep only lower 4 bits
+and(flags, '0x0F')      // Keep only lower 4 bits
 
 // Mask operation on bytes
-and(data_byte, 0xFF)    // Ensure single byte
+and(data_byte, '0xFF')  // Keep the first byte, clear the others
 
 // Combine with other operations
-byte(and(version_flags, 0x7F), 1)
+byte(and(version_flags, '0x7F'), 1)
 ```
 
 ### `or(a, b)`
@@ -184,17 +187,48 @@ Performs bitwise OR operation.
 **Parameters:**
 - `a`, `b` — Integer or byte values
 
+The operands and the result are as for `and`.
+
 **Examples:**
 
 ```tamarin
 // Set specific bits
-or(flags, 0x80)         // Set high bit
+or(flags, '0x80')       // Set high bit
 
 // Combine bit fields
 or(version, or(flags, type))
 
 // Complex bit manipulation
-or(and(upper_bits, 0xF0), and(lower_bits, 0x0F))
+or(and(upper_bits, '0xF0'), and(lower_bits, '0x0F'))
+```
+
+### `xor(a, b)`
+
+Performs bitwise exclusive or.
+
+**Parameters:**
+- `a`, `b` — Integer or byte values; byte values have at most eight bytes
+
+The result has the kind, and for bytes the length, of `a`, as for `and` and `or`.
+
+**Example:**
+
+```tamarin
+xor(key_byte, '0x5C')   // Mask with a constant
+```
+
+### `not(a)`
+
+Performs bitwise complement.
+
+**Parameters:**
+- `a` — An integer, whose 64-bit two's complement pattern is complemented, or a byte string, each of whose bytes
+  is complemented
+
+**Example:**
+
+```tamarin
+not('0x0F')             // 0xf0
 ```
 
 ## Function composition
