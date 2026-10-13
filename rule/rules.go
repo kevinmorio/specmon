@@ -184,19 +184,40 @@ func (r *Rule) Subst(b *term.Binding) *Rule {
 		s.RHS[i] = r.RHS[i].Subst(b)
 	}
 
-	triggers := make([]term.Term, len(r.Triggers()))
-	for i := range r.Triggers() {
-		triggers[i] = r.Triggers()[i].Subst(b)
+	ruleTriggers := r.Triggers()
+	triggers := make([]term.Term, len(ruleTriggers))
+	for i, trigger := range ruleTriggers {
+		triggers[i] = trigger.Subst(b)
 	}
 	s.Attrs[TriggerAttributeName] = TermAttribute{triggers}
 
-	hints := make([]term.Term, len(r.Hints()))
-	for i := range r.Hints() {
-		hints[i] = r.Hints()[i].Subst(b)
+	ruleHints := r.Hints()
+	hints := make([]term.Term, len(ruleHints))
+	for i, hint := range ruleHints {
+		hints[i] = hint.Subst(b)
 	}
 	s.Attrs[HintAttributeName] = TermAttribute{hints}
 
 	return s
+}
+
+// EvaluateGround substitutes b into r, replaces each trigger's
+// computation by its observed result and evaluates the formats. The
+// result must be ground.
+func (r *Rule) EvaluateGround(b *term.Binding) (*Rule, error) {
+	source := r.Subst(b)
+	evaluated := source
+	for _, trigger := range source.Triggers() {
+		evaluated = evaluated.Subst(term.BindingFromPair(trigger))
+	}
+	evaluated, err := evaluated.ReplaceFormats()
+	if err != nil {
+		return nil, fmt.Errorf("evaluate rule %s: %w", r.Name, err)
+	}
+	if !evaluated.IsGround() {
+		return nil, fmt.Errorf("expected ground rule (%s), got variables: %v", evaluated.Name, source.Vars())
+	}
+	return evaluated, nil
 }
 
 func (r *Rule) IsGround() bool {

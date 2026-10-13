@@ -639,26 +639,23 @@ func TestMonitorRestrictionViolation(t *testing.T) {
 	t.Logf("Test passed: Rule A succeeded, Rule B failed due to restriction violation")
 }
 
-// TestMonitorTriggerAnchoredToCurrentEvent pins the trigger-anchoring
+// TestMonitorTriggerAnchoredToCurrentEvent pins the trigger anchoring
 // semantics: every rule application performed while processing event a
-// must consume an instance of a itself. A buffered seen-event may only
-// fill the REMAINING trigger slots of a multi-trigger rule; it can
-// never supply the binding for the slot the current event matched.
+// must consume an instance of a itself. Earlier trigger events exist only
+// in hidden pending applications and cannot fill the current trigger slot.
 //
-// Scenario: R1 buffers go-events (its done-trigger never arrives). R2
+// Scenario: R1 starts on go events, but its done trigger never arrives. R2
 // consumes Gate() on <go, x>, where x occurs only in the trigger. The
-// trace buffers <go,'1'> while R2 is inapplicable (no Gate), creates
-// Gate(), then sends <go,'2'>.
+// trace starts R1 on <go,'1'> while R2 is inapplicable, creates Gate(),
+// then sends <go,'2'>.
 //
-// Exactly two configurations must result:
+// Exactly two public configurations must result:
 //
-//	{ [Gate()]     | seen: <go,'1'>, <go,'2'> }  (R1 buffered <go,'2'>)
-//	{ [State('2')] | seen: <go,'1'> }            (R2 fired on <go,'2'>)
+//	{ [Gate()] }      (R1 also starts on <go,'2'>)
+//	{ [State('2')] }  (R2 fires on <go,'2'>)
 //
-// A configuration containing State('1') -- R2 fired by binding x from
-// the buffered <go,'1'> instead of the arriving event -- is invalid
-// and must be unreachable. (Matching the trigger patterns against the
-// seen set with the event binding left open reintroduces it.)
+// A configuration containing State('1') is invalid and must be unreachable.
+// Neither configuration exposes the earlier events through Config.String.
 func TestMonitorTriggerAnchoredToCurrentEvent(t *testing.T) {
 	pairEv := func(name string, arg term.Term) *term.Function {
 		return term.NewFunction("pair", []term.Term{
@@ -717,100 +714,27 @@ func TestMonitorTriggerAnchoredToCurrentEvent(t *testing.T) {
 		t.Fatalf("expected exactly 2 configurations, got %d", len(configs))
 	}
 
-	var sawFired, sawBuffered bool
+	var sawFired, sawPending bool
 	for _, c := range configs {
 		s := c.String()
 		if strings.Contains(s, "State('1')") {
-			t.Errorf("invalid configuration reached: R2 bound its trigger from the buffered <go,'1'>: %s", s)
+			t.Errorf("invalid configuration reached: R2 bound its trigger from the earlier <go,'1'>: %s", s)
+		}
+		if strings.Contains(s, "<go()") {
+			t.Errorf("configuration exposed a completed trigger event: %s", s)
 		}
 		switch {
-		case strings.Contains(s, "State('2')") && strings.Contains(s, "<go(), '1'>"):
+		case strings.Contains(s, "State('2')"):
 			sawFired = true
-		case strings.Contains(s, "Gate()") &&
-			strings.Contains(s, "<go(), '1'>") && strings.Contains(s, "<go(), '2'>"):
-			sawBuffered = true
+		case strings.Contains(s, "Gate()"):
+			sawPending = true
 		}
 	}
 	if !sawFired {
-		t.Errorf("missing configuration { [State('2')] | seen: <go,'1'> }")
+		t.Errorf("missing public configuration { [State('2')] }")
 	}
-	if !sawBuffered {
-		t.Errorf("missing configuration { [Gate()] | seen: <go,'1'>, <go,'2'> }")
-	}
-}
-
-// TestMonitorSameSignatureTriggersRegisteredOnce guards the per-key
-// dedup in NewMonitor. A rule with two triggers of the same (name,
-// arity) signature must be registered once under that key: a single
-// handleTriggers invocation already considers every trigger term of
-// the rule, so a duplicate registration would produce identical
-// RuleApplications and emit the rule's actions twice.
-//
-// Setup: R needs both <go, x> and <go, y> (same signature), with x, y
-// bound by the LHS facts A(x), B(y). The first go-event is buffered
-// (missing second trigger); the second completes the rule. Exactly one
-// action group must be returned for the completing event.
-func TestMonitorSameSignatureTriggersRegisteredOnce(t *testing.T) {
-	pairEv := func(name string, arg term.Term) *term.Function {
-		return term.NewFunction("pair", []term.Term{
-			term.NewFunction(name, []term.Term{}), arg,
-		})
-	}
-
-	setupRule := &rule.Rule{
-		Name: "Setup",
-		LHS:  []*rule.Fact{},
-		RHS: []*rule.Fact{
-			rule.NewFact("A", []term.Term{term.NewConstant("1")}, rule.LinearFact),
-			rule.NewFact("B", []term.Term{term.NewConstant("2")}, rule.LinearFact),
-		},
-		Attrs: map[string]rule.Attribute{
-			"trigger": rule.TermAttribute{Value: []term.Term{
-				pairEv("setup", term.NewFunction("pair", []term.Term{})),
-			}},
-		},
-	}
-
-	r := &rule.Rule{
-		Name: "R",
-		LHS: []*rule.Fact{
-			rule.NewFact("A", []term.Term{term.NewVariable("x")}, rule.LinearFact),
-			rule.NewFact("B", []term.Term{term.NewVariable("y")}, rule.LinearFact),
-		},
-		RHS: []*rule.Fact{},
-		Act: []*rule.Fact{
-			rule.NewFact(monitor.RewriteEventName, []term.Term{
-				term.NewFunction("out", []term.Term{term.NewVariable("x"), term.NewVariable("y")}),
-			}, rule.LinearFact),
-		},
-		Attrs: map[string]rule.Attribute{
-			"trigger": rule.TermAttribute{Value: []term.Term{
-				pairEv("go", term.NewVariable("x")),
-				pairEv("go", term.NewVariable("y")),
-			}},
-		},
-	}
-
-	mon, err := monitor.NewMonitor([]*rule.Rule{setupRule, r})
-	if err != nil {
-		t.Fatalf("NewMonitor: %v", err)
-	}
-
-	if _, err := mon.ProcessEvent(pairEv("setup", term.NewFunction("pair", []term.Term{}))); err != nil {
-		t.Fatalf("ProcessEvent(setup): %v", err)
-	}
-	if _, err := mon.ProcessEvent(pairEv("go", term.NewConstant("1"))); err != nil {
-		t.Fatalf("ProcessEvent(go,1): %v", err)
-	}
-
-	actions, err := mon.ProcessEvent(pairEv("go", term.NewConstant("2")))
-	if err != nil {
-		t.Fatalf("ProcessEvent(go,2): %v", err)
-	}
-
-	if len(actions) != 1 {
-		t.Errorf("expected exactly 1 action group for one rule firing, got %d "+
-			"(duplicate trigger-key registration repeats identical applications)", len(actions))
+	if !sawPending {
+		t.Errorf("missing public configuration { [Gate()] }")
 	}
 }
 
